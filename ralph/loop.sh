@@ -45,8 +45,8 @@ if [ ! -f "$PROMPT_FILE" ]; then
     exit 1
 fi
 
-JQ_OUTPUT=$(mktemp)
-trap 'rm -f "$JQ_OUTPUT"' EXIT
+PREV_READY=""
+STALE_COUNT=0
 
 while true; do
     if [ $MAX_ITERATIONS -gt 0 ] && [ $ITERATION -ge $MAX_ITERATIONS ]; then
@@ -55,8 +55,6 @@ while true; do
     fi
 
     # Run Ralph iteration with selected prompt
-    # jq extracts interesting info and emits __RALPH_COMPLETE__ if the
-    # assistant (not the prompt) outputs <promise>COMPLETE</promise>
     cat "$PROMPT_FILE" | claude -p \
         --dangerously-skip-permissions \
         --output-format=stream-json \
@@ -75,11 +73,7 @@ while true; do
         if .type == "assistant" then
             .message.content[]? |
             if .type == "text" and (.text | test("\\S")) then
-                lavender + (.text | gsub("^\\s+|\\s+$"; "")) + reset,
-                if (.text | test("<promise>COMPLETE</promise>")) then
-                    "__RALPH_COMPLETE__"
-                else empty
-                end
+                lavender + (.text | gsub("^\\s+|\\s+$"; "")) + reset
             elif .type == "tool_use" then
                 if .name == "AskUserQuestion" then
                     "\n" + pink + bold + "  [QUESTION] " + reset + pink +
@@ -113,13 +107,28 @@ while true; do
             yellow + dim + ((.result // "") | tostring | .[0:300]) + reset + "\n"
         else empty
         end
-    ' | tee "$JQ_OUTPUT"
+    '
 
-    # Check jq's formatted output for the sentinel (only emitted for assistant messages)
-    if grep -q '__RALPH_COMPLETE__' "$JQ_OUTPUT"; then
-        echo -e "\n\033[38;5;229m\033[1mAll work complete, exiting.\033[0m"
+    # Check remaining tasks
+    CURRENT_READY=$(bd ready --json 2>/dev/null)
+
+    if [ "$CURRENT_READY" = "[]" ] || [ -z "$CURRENT_READY" ]; then
+        echo -e "\n\033[38;5;229m\033[1mNo tasks remaining, exiting.\033[0m"
         break
     fi
+
+    # Detect stuck loop: break after N consecutive identical task lists
+    if [ "$CURRENT_READY" = "$PREV_READY" ]; then
+        STALE_COUNT=$((STALE_COUNT + 1))
+        echo -e "\033[38;5;210m\033[2m  (task list unchanged: $STALE_COUNT)\033[0m"
+        if [ $STALE_COUNT -ge 1 ]; then
+            echo -e "\n\033[38;5;210m\033[1mTask list unchanged, exiting.\033[0m"
+            break
+        fi
+    else
+        STALE_COUNT=0
+    fi
+    PREV_READY="$CURRENT_READY"
 
     # # Push changes after each iteration
     # git push origin "$CURRENT_BRANCH" || {

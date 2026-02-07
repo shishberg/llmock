@@ -6,4 +6,8 @@
 6. Don't bother trying `git push`, you don't have credentials.
 
 ONLY WORK ON A SINGLE FEATURE.
-If, while implementing the feature, you notice that all work is complete, output <promise>COMPLETE</promise>.
+
+DO NOT USE PLAN MODE. For larger tasks that require a plan:
+- break it down into smaller tasks
+- use `bd create` to create each smaller task
+- use `bd close --reason "..."` to close the current large task. Mentioning in the reason that it was broken down into smaller tasks
