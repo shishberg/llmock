@@ -115,3 +115,26 @@ Added a Markov chain text generator that produces LLM-ish filler text, used as a
 - `NewMarkovResponder(seed)` and `NewMarkovChain(order)` constructors for programmatic use
 - 15 new tests: deterministic output with fixed seed, different seeds produce different output, output contains only corpus words (statistical), default corpus words-only validation, max token limit respected, empty corpus handling, order-1 chain, server integration (rule match vs Markov fallback), deterministic MarkovResponder, no-messages error, `{{markov}}` template expansion, `{{markov:N}}` with token limit, WithCorpus custom corpus, WithCorpusFile, Anthropic endpoint integration
 - All 83 tests pass, build clean, vet clean, no race conditions
+
+## llmock-5bz: YAML/JSON config file and CLI polish
+
+Added config file support and made the standalone CLI server production-ready:
+
+- `Config` struct unifies YAML/JSON file config and functional options into one source of truth
+  - `ServerConfig`: port, admin_api toggle
+  - `DefaultConfig`: token_delay_ms, seed, model
+  - `RuleConfig`: pattern, responses, delay_ms
+  - Supports `corpus_file` and `faults` array at the top level
+- `LoadConfig(path)` reads a YAML or JSON config file (auto-detected by `.json` extension)
+- `ParseConfig(data, path)` parses config from raw bytes
+- `FindDefaultConfig()` auto-discovers `llmock.yaml` or `llmock.json` in the current directory
+- `CompileRules(configs)` converts `RuleConfig` entries to compiled `Rule` values with validation
+- `Config.ToOptions()` converts the full config into functional `Option` values for `New()`, so config files and programmatic options use the same code path; functional options applied after config options override config values
+- CLI flags: `--config` (explicit config path), `--port` (overrides config), `--verbose` (log all requests to stderr)
+- Port resolution priority: `--port` flag > config file > `PORT` env var > 9090
+- Verbose mode middleware logs: method, path, HTTP status, and response time for each request
+- `responseWriter` wrapper captures status codes and delegates `Flush()` for SSE compatibility
+- Startup banner: logs config source, port, number of rules loaded, corpus source, admin API status
+- Graceful shutdown on SIGINT/SIGTERM with 5-second timeout via `http.Server.Shutdown()`
+- 15 new tests: YAML parsing (full config), JSON parsing, invalid YAML/JSON errors, file loading (valid and missing), `FindDefaultConfig` (none, yaml, json), `CompileRules` (valid, invalid regex, no responses), `ToOptions` (full config, invalid rule, empty config), config with faults, token delay option
+- All 98 tests pass, build clean, vet clean, no race conditions
