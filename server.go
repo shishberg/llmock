@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	mrand "math/rand/v2"
 	"net/http"
 	"strings"
 	"time"
@@ -42,11 +43,14 @@ func (e EchoResponder) Respond(messages []InternalMessage) (string, error) {
 
 // Server is a mock LLM API server.
 type Server struct {
-	mux          *http.ServeMux
-	responder    Responder
-	tokenDelay   time.Duration
-	adminEnabled *bool
-	admin        *adminState
+	mux           *http.ServeMux
+	responder     Responder
+	tokenDelay    time.Duration
+	adminEnabled  *bool
+	admin         *adminState
+	faults        *faultState
+	initialFaults []Fault
+	seed          *int64
 }
 
 // New creates a new Server with the given options.
@@ -58,6 +62,15 @@ func New(opts ...Option) *Server {
 	if s.responder == nil {
 		s.responder = EchoResponder{}
 	}
+
+	// Initialize fault state.
+	var rng *mrand.Rand
+	if s.seed != nil {
+		rng = mrand.New(mrand.NewPCG(uint64(*s.seed), 0))
+	} else {
+		rng = mrand.New(mrand.NewPCG(mrand.Uint64(), mrand.Uint64()))
+	}
+	s.faults = newFaultState(s.initialFaults, rng)
 
 	// Admin API is enabled by default.
 	adminOn := s.adminEnabled == nil || *s.adminEnabled
@@ -79,6 +92,7 @@ func New(opts ...Option) *Server {
 
 	if adminOn {
 		registerAdminRoutes(s.mux, s.admin)
+		registerFaultRoutes(s.mux, s.faults)
 	}
 
 	return s
@@ -154,6 +168,13 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	if len(req.Messages) == 0 {
 		writeError(w, http.StatusBadRequest, "messages array is required and must not be empty")
 		return
+	}
+
+	// Evaluate faults before normal processing.
+	if f, ok := s.faults.evaluate(); ok {
+		if s.executeFault(w, r, f, "openai", req.Stream) {
+			return
+		}
 	}
 
 	internal := toInternalMessages(req.Messages)
@@ -274,6 +295,13 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	if len(req.Messages) == 0 {
 		writeError(w, http.StatusBadRequest, "messages array is required and must not be empty")
 		return
+	}
+
+	// Evaluate faults before normal processing.
+	if f, ok := s.faults.evaluate(); ok {
+		if s.executeFault(w, r, f, "anthropic", req.Stream) {
+			return
+		}
 	}
 
 	internal := anthropicToInternal(req.Messages)

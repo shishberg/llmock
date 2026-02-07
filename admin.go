@@ -198,6 +198,43 @@ func (ar *adminResponder) getLastMatchedRule() string {
 	return ar.lastMatchedRule
 }
 
+// registerFaultRoutes adds the /_mock/faults endpoints to the mux.
+func registerFaultRoutes(mux *http.ServeMux, fs *faultState) {
+	mux.HandleFunc("GET /_mock/faults", func(w http.ResponseWriter, r *http.Request) {
+		faults := fs.getFaults()
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{"faults": faults})
+	})
+
+	mux.HandleFunc("POST /_mock/faults", func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Faults []Fault `json:"faults"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			// Try single fault for convenience.
+			writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+			return
+		}
+
+		// Support both single fault (top-level fields) and array.
+		if len(req.Faults) == 0 {
+			writeError(w, http.StatusBadRequest, "faults array is required and must not be empty")
+			return
+		}
+
+		fs.addFaults(req.Faults)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+	})
+
+	mux.HandleFunc("DELETE /_mock/faults", func(w http.ResponseWriter, r *http.Request) {
+		fs.clear()
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+	})
+}
+
 // registerAdminRoutes adds the /_mock/ endpoints to the mux.
 func registerAdminRoutes(mux *http.ServeMux, state *adminState) {
 	mux.HandleFunc("GET /_mock/rules", func(w http.ResponseWriter, r *http.Request) {

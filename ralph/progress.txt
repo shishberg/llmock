@@ -75,3 +75,24 @@ Added HTTP endpoints under `/_mock/` to inject, inspect, and reset rules at runt
 - Request logging captures method, path, user message, matched rule pattern, and response text for each API request
 - 16 new tests: rule injection with match verification, prepend/append priority, GET/DELETE rules, full reset, request log inspection and clearing, admin disabled returns 404, invalid regex/empty rules/empty responses validation, 100-entry log cap, default server admin endpoints, rule injection on echo-only server, concurrent access with race detector
 - All 52 tests pass, build clean, vet clean, no race conditions
+
+## llmock-6dk: Failure and delay injection
+
+Added fault injection system for simulating failures, errors, and latency — critical for testing retry logic, timeouts, and error handling:
+
+- Five fault types: `error` (HTTP error responses), `delay` (adds latency before normal response), `timeout` (accepts connection then hangs until client disconnects), `malformed` (returns invalid JSON or broken SSE), `rate_limit` (429 with Retry-After header)
+- `Fault` struct with configurable fields: `Type`, `Status`, `Message`, `ErrorType`, `DelayMS`, `Probability` (0-1 for random firing), `Count` (auto-clearing after N triggers)
+- Correct error response formats for both APIs: OpenAI `{"error":{"message":"...","type":"..."}}` and Anthropic `{"type":"error","error":{"type":"...","message":"..."}}`
+- Faults evaluated before rules in the request pipeline — global faults fire first
+- Go API: `llmock.WithFault(llmock.Fault{...})` option for startup configuration
+- `llmock.WithSeed(int64)` option for deterministic fault probability in tests
+- Admin API endpoints for runtime fault management:
+  - `POST /_mock/faults` — inject faults with JSON body `{"faults":[...]}`
+  - `GET /_mock/faults` — inspect current active faults
+  - `DELETE /_mock/faults` — clear all faults
+- Thread-safe `faultState` with mutex-protected fault list and dedicated `math/rand/v2.Rand` instance
+- Count-based faults auto-remove from the active list when exhausted
+- Timeout fault starts SSE stream (for streaming requests) then blocks, simulating mid-response timeout
+- Malformed fault returns broken JSON for non-streaming and broken SSE for streaming requests
+- 16 new tests: error faults on both OpenAI and Anthropic endpoints, rate limit with Retry-After header on both APIs, delay with timing verification, malformed for both stream and non-stream, timeout with context deadline, count-based auto-clearing, probability with fixed seed, admin API POST/GET/DELETE, fault-before-rules ordering, Go API WithFault, default error status
+- All 68 tests pass, build clean, vet clean, no race conditions
