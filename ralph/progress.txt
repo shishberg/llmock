@@ -264,3 +264,28 @@ Changed the default zero-config behavior so that `llmock.New()` and `go run ./cm
 - Updated 11 tests across server_test.go, stream_test.go, admin_test.go, fault_test.go, and multiturn_test.go to use explicit `EchoResponder` where exact echo matching was needed
 - Added `TestChatCompletions_DefaultRulesGreeting` to verify the new default behavior produces rule-based (not echo) responses
 - All 155 tests pass, build clean, vet clean
+
+## llmock-ete: MCP control plane: core tool definitions and dispatch
+
+Added an MCP control plane endpoint (`POST /mcp/control`) that exposes llmock's admin functionality as MCP tools, enabling AI agents to control llmock's behavior via MCP:
+
+- New `controlPlane` struct with references to `adminState` and `faultState` for accessing server internals
+- `POST /mcp/control` endpoint using JSON-RPC 2.0 protocol, separate from the mock MCP server (`POST /mcp`)
+- Implements `initialize`, `tools/list`, and `tools/call` MCP methods
+- 9 control tools mirroring the existing `/_mock/*` admin HTTP API:
+  - `llmock_add_rule` — add a response rule with regex pattern, responses array, and optional priority (0=prepend, -1=append, N=insert at index)
+  - `llmock_list_rules` — return current rules as JSON
+  - `llmock_reset_rules` — restore rules to initial startup configuration
+  - `llmock_add_fault` — inject a fault (error, delay, timeout, malformed, rate_limit) with optional status, message, delay_ms, probability, count
+  - `llmock_list_faults` — return active faults as JSON
+  - `llmock_clear_faults` — remove all active faults
+  - `llmock_list_requests` — return request log as JSON
+  - `llmock_clear_requests` — clear the request log
+  - `llmock_reset` — full reset: rules + faults + request log
+- Each tool has a full JSON schema (`inputSchema`) for MCP client tool discovery
+- Error responses use MCP's `isError: true` convention with descriptive error messages (invalid regex, missing required fields, etc.)
+- Control plane is automatically enabled when admin API is enabled (default), disabled when admin API is disabled
+- Coexists cleanly with the mock MCP server — `POST /mcp` simulates an MCP backend for testing MCP clients, while `POST /mcp/control` controls llmock itself
+- New `control.go` with all tool definitions, dispatch logic, and tool call implementations
+- 18 new tests: initialize handshake, tools/list with all 9 tools, add rule + verify via chat request, invalid regex error, rule priority, list rules, reset rules, add fault + verify via HTTP 503, list faults, clear faults, list requests, clear requests, full reset (rules + faults + log), unknown tool error, admin-disabled returns 404, method not found, invalid JSON parse error, coexistence with mock MCP server
+- All 173 tests pass, build clean, vet clean, no race conditions

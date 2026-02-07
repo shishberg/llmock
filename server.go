@@ -60,6 +60,7 @@ type Server struct {
 	mcpEnabled    bool
 	mcpConfig     MCPConfig
 	mcp           *mcpState
+	control       *controlPlane
 }
 
 // New creates a new Server with the given options.
@@ -135,6 +136,8 @@ func New(opts ...Option) *Server {
 		if s.mcpEnabled {
 			registerMCPAdminRoutes(s.mux, s.mcp)
 		}
+		s.control = &controlPlane{admin: s.admin, faults: s.faults}
+		s.mux.HandleFunc("POST /mcp/control", s.control.handleControl)
 	}
 
 	return s
