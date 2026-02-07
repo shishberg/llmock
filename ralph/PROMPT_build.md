@@ -1,10 +1,10 @@
-@ralph/progress.txt
-1. Run `bd ready` to decide which task to work on first. This should be the one YOU decide has the highest priority - not necessarily the first in the list.
-2. Check any feedback loops, such as types and tests.
-3. Append your progress to the ralph/progress.txt file.
-4. Make a git commit of that feature.
-5. Close the beads task.
-6. Don't bother trying `git push`, you don't have credentials.
+1. Read @ralph/progress.txt
+2. Run `bd ready` to decide which task to work on first. This should be the one YOU decide has the highest priority - not necessarily the first in the list.
+3. Check any feedback loops, such as types and tests.
+4. Append your progress to the ralph/progress.txt file.
+5. Make a git commit of that feature.
+6. Close the beads task.
+7. Don't bother trying `git push`, you don't have credentials.
 
 ONLY WORK ON A SINGLE FEATURE.
 
