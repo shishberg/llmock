@@ -186,9 +186,27 @@ type OpenAIFunctionDef struct {
 }
 
 // Message represents a chat message.
+// For multi-turn tool use, assistant messages may have ToolCalls instead of Content,
+// and tool-role messages carry a ToolCallID linking them to a previous tool call.
 type Message struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
+	Role       string           `json:"role"`
+	Content    json.RawMessage  `json:"content"`  // string or null
+	ToolCalls  []OpenAIToolCall `json:"tool_calls,omitempty"`
+	ToolCallID string           `json:"tool_call_id,omitempty"`
+	Name       string           `json:"name,omitempty"` // function name for tool messages
+}
+
+// MessageContent extracts the text content from a Message, handling both
+// string and null JSON values.
+func (m Message) MessageContent() string {
+	if len(m.Content) == 0 {
+		return ""
+	}
+	var s string
+	if err := json.Unmarshal(m.Content, &s); err != nil {
+		return ""
+	}
+	return s
 }
 
 // ChatCompletionResponse represents an OpenAI chat completion response.
@@ -237,9 +255,16 @@ type Usage struct {
 }
 
 func toInternalMessages(messages []Message) []InternalMessage {
-	internal := make([]InternalMessage, len(messages))
-	for i, m := range messages {
-		internal[i] = InternalMessage{Role: m.Role, Content: m.Content}
+	internal := make([]InternalMessage, 0, len(messages))
+	for _, m := range messages {
+		content := m.MessageContent()
+		// For tool result messages, use the content as-is with role "tool".
+		// For assistant messages with tool_calls but no content, skip adding
+		// them as internal messages (they don't contain text for rule matching).
+		if m.Role == "assistant" && content == "" && len(m.ToolCalls) > 0 {
+			continue
+		}
+		internal = append(internal, InternalMessage{Role: m.Role, Content: content})
 	}
 	return internal
 }
@@ -401,9 +426,69 @@ type AnthropicToolDef struct {
 }
 
 // AnthropicMessage represents a message in the Anthropic format.
+// Content can be a string or an array of content blocks (for tool use/results).
 type AnthropicMessage struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
+	Role    string          `json:"role"`
+	Content json.RawMessage `json:"content"`
+}
+
+// AnthropicInputBlock represents a content block in an Anthropic request message.
+// These appear when Content is an array rather than a string.
+type AnthropicInputBlock struct {
+	Type       string         `json:"type"`
+	Text       string         `json:"text,omitempty"`
+	ID         string         `json:"id,omitempty"`          // tool_use block
+	Name       string         `json:"name,omitempty"`        // tool_use block
+	Input      map[string]any `json:"input,omitempty"`       // tool_use block
+	ToolUseID  string         `json:"tool_use_id,omitempty"` // tool_result block
+	Content    json.RawMessage `json:"content,omitempty"`    // tool_result block (string or nested blocks)
+	IsError    bool           `json:"is_error,omitempty"`    // tool_result block
+}
+
+// MessageContent extracts the text content from an AnthropicMessage.
+// If Content is a string, returns it directly.
+// If Content is an array of blocks, concatenates text blocks and tool_result content.
+func (m AnthropicMessage) MessageContent() string {
+	if len(m.Content) == 0 {
+		return ""
+	}
+	// Try as string first.
+	var s string
+	if err := json.Unmarshal(m.Content, &s); err == nil {
+		return s
+	}
+	// Try as array of content blocks.
+	var blocks []AnthropicInputBlock
+	if err := json.Unmarshal(m.Content, &blocks); err != nil {
+		return ""
+	}
+	var parts []string
+	for _, b := range blocks {
+		switch b.Type {
+		case "text":
+			if b.Text != "" {
+				parts = append(parts, b.Text)
+			}
+		case "tool_result":
+			// tool_result content can be a string or array of blocks.
+			if len(b.Content) > 0 {
+				var cs string
+				if err := json.Unmarshal(b.Content, &cs); err == nil {
+					parts = append(parts, cs)
+				} else {
+					var nested []AnthropicInputBlock
+					if err := json.Unmarshal(b.Content, &nested); err == nil {
+						for _, nb := range nested {
+							if nb.Type == "text" && nb.Text != "" {
+								parts = append(parts, nb.Text)
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+	return strings.Join(parts, "\n")
 }
 
 // AnthropicResponse represents an Anthropic Messages API response.
@@ -442,9 +527,14 @@ func randomHex(n int) string {
 }
 
 func anthropicToInternal(messages []AnthropicMessage) []InternalMessage {
-	internal := make([]InternalMessage, len(messages))
-	for i, m := range messages {
-		internal[i] = InternalMessage{Role: m.Role, Content: m.Content}
+	internal := make([]InternalMessage, 0, len(messages))
+	for _, m := range messages {
+		content := m.MessageContent()
+		// Skip assistant messages that only contain tool_use blocks (no text).
+		if m.Role == "assistant" && content == "" {
+			continue
+		}
+		internal = append(internal, InternalMessage{Role: m.Role, Content: content})
 	}
 	return internal
 }
@@ -452,7 +542,7 @@ func anthropicToInternal(messages []AnthropicMessage) []InternalMessage {
 func estimateAnthropicTokens(messages []AnthropicMessage) int {
 	total := 0
 	for _, m := range messages {
-		total += countTokens(m.Content)
+		total += countTokens(m.MessageContent())
 		total += 4
 	}
 	return total
@@ -583,7 +673,7 @@ anthropicTextResponse:
 func estimateTokens(messages []Message) int {
 	total := 0
 	for _, m := range messages {
-		total += countTokens(m.Content)
+		total += countTokens(m.MessageContent())
 		total += 4 // overhead per message (role, separators)
 	}
 	return total

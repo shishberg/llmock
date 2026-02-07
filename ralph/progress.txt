@@ -230,3 +230,25 @@ Verified that this task was already fully implemented as part of llmock-2fo. The
 - `tools/call` executes tool calls with regex pattern matching on arguments; Markov fallback when no pattern matches
 - All 26 MCP tests pass (144 total), build clean, vet clean
 - Closed as already complete — no additional code changes needed
+
+## llmock-c5y: Multi-turn tool use conversation support
+
+Added support for multi-turn tool use conversations in both OpenAI and Anthropic API formats, enabling realistic agentic workflow testing:
+
+- **OpenAI `Message` type** updated to support the full tool use protocol:
+  - `Content` field changed from `string` to `json.RawMessage` to handle both string and `null` values (assistant messages with tool calls have null content)
+  - Added `ToolCalls []OpenAIToolCall` field for assistant messages that invoke tools
+  - Added `ToolCallID string` field for tool-role result messages linking back to a tool call
+  - Added `Name string` field for function name in tool messages
+  - `MessageContent()` method safely extracts text from the raw JSON content
+- **Anthropic `AnthropicMessage` type** updated to support content block arrays:
+  - `Content` field changed from `string` to `json.RawMessage` to handle both string and array-of-blocks formats
+  - New `AnthropicInputBlock` type representing request-side content blocks: `text`, `tool_use` (with id/name/input), and `tool_result` (with tool_use_id/content/is_error)
+  - `MessageContent()` method handles string content, array content blocks, and nested tool_result content (both string and array-of-blocks formats)
+- **Internal conversion** updated for both APIs:
+  - `toInternalMessages` skips assistant messages with tool_calls but no text content (they don't contain text for rule matching)
+  - `anthropicToInternal` skips assistant messages with only tool_use blocks
+  - Both preserve tool-role and tool_result messages for `extractInput` to consider
+- **Token estimation** updated to use `MessageContent()` for both APIs
+- 10 new tests: OpenAI multi-turn with tool results, OpenAI tool result rule matching, OpenAI null content handling, Anthropic tool_use/tool_result conversation, Anthropic nested content blocks in tool_result, Anthropic mixed text + tool_result blocks, OpenAI multiple parallel tool calls, OpenAI streaming with tool results, Anthropic streaming with tool results, Anthropic tool_result with is_error flag
+- All 154 tests pass, build clean, vet clean, no race conditions
