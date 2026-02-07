@@ -9,6 +9,6 @@
 ONLY WORK ON A SINGLE FEATURE.
 
 DO NOT USE PLAN MODE. For larger tasks that require a plan:
-- break it down into smaller tasks
-- use `bd create` to create each smaller task
-- use `bd close --reason "..."` to close the current large task. Mentioning in the reason that it was broken down into smaller tasks
+- Break it down into smaller tasks.
+- Use `bd create` to create each smaller task.
+- Use `bd close --reason "..."` to close the current large task. Mention in the reason that it was broken down into smaller tasks.
