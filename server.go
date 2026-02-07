@@ -4,11 +4,14 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
 	"time"
 )
+
+var errNoMessages = errors.New("no messages provided")
 
 // Option configures a Server.
 type Option func(*Server)
@@ -30,22 +33,20 @@ type EchoResponder struct{}
 
 // Respond returns the last user message content, or the last message if there is no user message.
 func (e EchoResponder) Respond(messages []InternalMessage) (string, error) {
-	for i := len(messages) - 1; i >= 0; i-- {
-		if messages[i].Role == "user" {
-			return messages[i].Content, nil
-		}
+	input := extractInput(messages)
+	if input == "" {
+		return "", errNoMessages
 	}
-	if len(messages) > 0 {
-		return messages[len(messages)-1].Content, nil
-	}
-	return "", fmt.Errorf("no messages provided")
+	return input, nil
 }
 
 // Server is a mock LLM API server.
 type Server struct {
-	mux        *http.ServeMux
-	responder  Responder
-	tokenDelay time.Duration
+	mux          *http.ServeMux
+	responder    Responder
+	tokenDelay   time.Duration
+	adminEnabled *bool
+	admin        *adminState
 }
 
 // New creates a new Server with the given options.
@@ -57,10 +58,38 @@ func New(opts ...Option) *Server {
 	if s.responder == nil {
 		s.responder = EchoResponder{}
 	}
+
+	// Admin API is enabled by default.
+	adminOn := s.adminEnabled == nil || *s.adminEnabled
+	if adminOn {
+		// Extract initial rules from the responder if it's a RuleResponder.
+		var rules []Rule
+		if rr, ok := s.responder.(*RuleResponder); ok {
+			rules = rr.rules
+		}
+		s.admin = newAdminState(rules)
+		// Wrap the responder: admin rules are tried first, then fallback
+		// to the original responder.
+		s.responder = &adminResponder{state: s.admin, fallback: s.responder}
+	}
+
 	s.mux = http.NewServeMux()
 	s.mux.HandleFunc("POST /v1/chat/completions", s.handleChatCompletions)
 	s.mux.HandleFunc("POST /v1/messages", s.handleMessages)
+
+	if adminOn {
+		registerAdminRoutes(s.mux, s.admin)
+	}
+
 	return s
+}
+
+// WithAdminAPI enables or disables the /_mock/ admin endpoints.
+// The admin API is enabled by default.
+func WithAdminAPI(enabled bool) Option {
+	return func(s *Server) {
+		s.adminEnabled = &enabled
+	}
 }
 
 // Handler returns the http.Handler for this server.
@@ -127,11 +156,14 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	responseText, err := s.responder.Respond(toInternalMessages(req.Messages))
+	internal := toInternalMessages(req.Messages)
+	responseText, err := s.responder.Respond(internal)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+
+	s.logAdminRequest(r, internal, responseText)
 
 	promptTokens := estimateTokens(req.Messages)
 	completionTokens := countTokens(responseText)
@@ -244,11 +276,14 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	responseText, err := s.responder.Respond(anthropicToInternal(req.Messages))
+	internal := anthropicToInternal(req.Messages)
+	responseText, err := s.responder.Respond(internal)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+
+	s.logAdminRequest(r, internal, responseText)
 
 	inputTokens := estimateAnthropicTokens(req.Messages)
 	outputTokens := countTokens(responseText)
@@ -303,6 +338,38 @@ type errorResponse struct {
 		Message string `json:"message"`
 		Type    string `json:"type"`
 	} `json:"error"`
+}
+
+// logAdminRequest records a request in the admin log if admin is enabled.
+func (s *Server) logAdminRequest(r *http.Request, messages []InternalMessage, responseText string) {
+	if s.admin == nil {
+		return
+	}
+	matchedRule := ""
+	if ar, ok := s.responder.(*adminResponder); ok {
+		matchedRule = ar.getLastMatchedRule()
+	}
+	s.admin.logRequest(requestEntry{
+		Timestamp:   time.Now(),
+		Method:      r.Method,
+		Path:        r.URL.Path,
+		UserMessage: extractInput(messages),
+		MatchedRule: matchedRule,
+		Response:    responseText,
+	})
+}
+
+// extractInput finds the last user message, or falls back to the last message.
+func extractInput(messages []InternalMessage) string {
+	for i := len(messages) - 1; i >= 0; i-- {
+		if messages[i].Role == "user" {
+			return messages[i].Content
+		}
+	}
+	if len(messages) > 0 {
+		return messages[len(messages)-1].Content
+	}
+	return ""
 }
 
 func writeError(w http.ResponseWriter, code int, msg string) {

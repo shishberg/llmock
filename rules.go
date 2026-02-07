@@ -36,19 +36,9 @@ func NewRuleResponder(rules []Rule) *RuleResponder {
 // Respond finds the first rule matching the last user message and expands
 // its response template with capture groups.
 func (r *RuleResponder) Respond(messages []InternalMessage) (string, error) {
-	var input string
-	for i := len(messages) - 1; i >= 0; i-- {
-		if messages[i].Role == "user" {
-			input = messages[i].Content
-			break
-		}
-	}
+	input := extractInput(messages)
 	if input == "" {
-		if len(messages) > 0 {
-			input = messages[len(messages)-1].Content
-		} else {
-			return "", fmt.Errorf("no messages provided")
-		}
+		return "", errNoMessages
 	}
 
 	for _, rule := range r.rules {

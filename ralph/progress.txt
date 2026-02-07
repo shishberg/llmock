@@ -56,3 +56,22 @@ Added Server-Sent Events streaming support for both OpenAI and Anthropic API for
 - New `stream.go` file with all streaming logic; handlers in `server.go` branch on `req.Stream`
 - 9 new tests: OpenAI chunk format validation, content reconstruction, non-stream still works, Anthropic event sequence validation, Anthropic content reconstruction, non-stream still works, message_delta stop_reason, WithTokenDelay, consistent ID across chunks
 - All 36 tests pass, build clean, vet clean
+
+## llmock-0we: Runtime rule injection API
+
+Added HTTP endpoints under `/_mock/` to inject, inspect, and reset rules at runtime for integration testing:
+
+- `POST /_mock/rules` — inject one or more rules with JSON body; rules are prepended by default (priority 0), appended with priority -1, or inserted at a specific index
+- `GET /_mock/rules` — return current rule list as JSON (patterns as strings, responses as arrays)
+- `DELETE /_mock/rules` — reset rules to the initial startup configuration
+- `POST /_mock/reset` — full reset: rules back to startup state and request log cleared
+- `GET /_mock/requests` — return log of last 100 requests with timestamps, matched rule, user message, and response
+- `DELETE /_mock/requests` — clear the request log
+- New `adminState` type with `sync.RWMutex` for thread-safe mutable rule list and request log
+- `adminResponder` wraps admin state with a fallback to the original responder (e.g., EchoResponder) when no rule matches — injected rules work even on servers started without rules
+- `WithAdminAPI(false)` option to disable the admin endpoints for production-like usage
+- Admin API is enabled by default on all servers
+- Refactored `extractInput()` helper and `errNoMessages` sentinel error as shared utilities across EchoResponder, RuleResponder, and adminResponder
+- Request logging captures method, path, user message, matched rule pattern, and response text for each API request
+- 16 new tests: rule injection with match verification, prepend/append priority, GET/DELETE rules, full reset, request log inspection and clearing, admin disabled returns 404, invalid regex/empty rules/empty responses validation, 100-entry log cap, default server admin endpoints, rule injection on echo-only server, concurrent access with race detector
+- All 52 tests pass, build clean, vet clean, no race conditions
