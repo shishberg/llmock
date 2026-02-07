@@ -208,3 +208,13 @@ Added MCP (Model Context Protocol) server simulation with full JSON-RPC 2.0 supp
 - Tool call pattern matching: responses support regex patterns matched against JSON-serialized arguments (same approach as main API rule matching)
 - 26 new tests: disabled-by-default, initialize handshake, invalid JSON (parse error), invalid JSON-RPC version, method not found, tools/list (with tools and empty), tools/call (pattern matching, second pattern, unknown tool, missing name, Markov fallback), resources/list (with mimeType), resources/read (found, not found, missing uri), prompts/list, prompts/get (template expansion, not found, missing name), request ID preservation (integer and string), full handshake sequence (7-step), admin tools/resources/prompts endpoints (GET/POST/DELETE), config YAML integration
 - All 144 tests pass, build clean, vet clean
+
+## llmock-09x: MCP: Config loading for tools, resources, and prompts
+
+Verified that MCP config loading for tools, resources, and prompts was already fully implemented as part of the llmock-2fo dependency:
+
+- `Config.MCP *MCPConfig` field in config.go:24 with proper YAML/JSON struct tags
+- `MCPToolConfig`, `MCPResourceConfig`, `MCPPromptConfig` types in mcp.go:46-87 all have `yaml`/`json` tags for parsing
+- `Config.ToOptions()` in config.go:144-146 converts parsed MCP config to `WithMCP()` functional option
+- `TestMCPConfigIntegration` in mcp_test.go:865-923 validates the full flow: YAML config with tools/resources/prompts -> `ParseConfig()` -> `ToOptions()` -> `New()` -> working MCP server endpoint
+- All 144 tests pass, build clean, vet clean
