@@ -45,8 +45,8 @@ if [ ! -f "$PROMPT_FILE" ]; then
     exit 1
 fi
 
-RAW_OUTPUT=$(mktemp)
-trap 'rm -f "$RAW_OUTPUT"' EXIT
+JQ_OUTPUT=$(mktemp)
+trap 'rm -f "$JQ_OUTPUT"' EXIT
 
 while true; do
     if [ $MAX_ITERATIONS -gt 0 ] && [ $ITERATION -ge $MAX_ITERATIONS ]; then
@@ -55,13 +55,12 @@ while true; do
     fi
 
     # Run Ralph iteration with selected prompt
-    # Raw NDJSON is tee'd to a temp file so we can check for the completion marker
-    # while still piping through jq for pretty display
+    # jq extracts interesting info and emits __RALPH_COMPLETE__ if the
+    # assistant (not the prompt) outputs <promise>COMPLETE</promise>
     cat "$PROMPT_FILE" | claude -p \
         --dangerously-skip-permissions \
         --output-format=stream-json \
         --verbose \
-    | tee "$RAW_OUTPUT" \
     | jq --unbuffered -r '
         # Pastel ANSI colors (256-color mode)
         def lavender: "\u001b[38;5;183m";
@@ -76,7 +75,11 @@ while true; do
         if .type == "assistant" then
             .message.content[]? |
             if .type == "text" and (.text | test("\\S")) then
-                lavender + (.text | gsub("^\\s+|\\s+$"; "")) + reset
+                lavender + (.text | gsub("^\\s+|\\s+$"; "")) + reset,
+                if (.text | test("<promise>COMPLETE</promise>")) then
+                    "__RALPH_COMPLETE__"
+                else empty
+                end
             elif .type == "tool_use" then
                 if .name == "AskUserQuestion" then
                     "\n" + pink + bold + "  [QUESTION] " + reset + pink +
@@ -93,7 +96,7 @@ while true; do
                      elif .name == "WebSearch" then "\"" + (.input.query // "") + "\""
                      elif .name == "WebFetch"  then (.input.url // "")
                      elif .name == "Task"      then (.input.description // "")
-                     else ((.input // {}) | tostring | .[0:120])
+                     else ((.input // {}) | tostring)
                      end) + reset
                 end
             else empty
@@ -110,10 +113,10 @@ while true; do
             yellow + dim + ((.result // "") | tostring | .[0:300]) + reset + "\n"
         else empty
         end
-    '
+    ' | tee "$JQ_OUTPUT"
 
-    # Check for completion marker in the raw output
-    if grep -q '<promise>COMPLETE</promise>' "$RAW_OUTPUT"; then
+    # Check jq's formatted output for the sentinel (only emitted for assistant messages)
+    if grep -q '__RALPH_COMPLETE__' "$JQ_OUTPUT"; then
         echo -e "\n\033[38;5;229m\033[1mAll work complete, exiting.\033[0m"
         break
     fi
