@@ -111,9 +111,15 @@ func TestRules_NoMatchFallback(t *testing.T) {
 	defer ts.Close()
 
 	result := chatRequest(t, ts, "something else entirely")
-	expected := "That's an interesting point. Could you tell me more?"
-	if result.Choices[0].Message.Content != expected {
-		t.Errorf("expected fallback %q, got %q", expected, result.Choices[0].Message.Content)
+	content := result.Choices[0].Message.Content
+	// When no rule matches, the Markov fallback generates text.
+	// It should produce a non-empty response.
+	if content == "" {
+		t.Error("expected non-empty Markov fallback response")
+	}
+	// The response should not be the matched rule's response.
+	if content == "matched" {
+		t.Error("expected fallback, but got the matched rule response")
 	}
 }
 

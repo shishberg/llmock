@@ -8,6 +8,7 @@ import (
 	"fmt"
 	mrand "math/rand/v2"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 )
@@ -51,6 +52,9 @@ type Server struct {
 	faults        *faultState
 	initialFaults []Fault
 	seed          *int64
+	corpusText    string
+	corpusFile    string
+	markov        *MarkovResponder
 }
 
 // New creates a new Server with the given options.
@@ -59,8 +63,28 @@ func New(opts ...Option) *Server {
 	for _, opt := range opts {
 		opt(s)
 	}
+	// Build the Markov responder.
+	s.markov = NewMarkovResponder(s.seed)
+	if s.corpusFile != "" {
+		data, err := os.ReadFile(s.corpusFile)
+		if err == nil {
+			mc := NewMarkovChain(2)
+			mc.Train(string(data))
+			s.markov.chain = mc
+		}
+	} else if s.corpusText != "" {
+		mc := NewMarkovChain(2)
+		mc.Train(s.corpusText)
+		s.markov.chain = mc
+	}
+
 	if s.responder == nil {
 		s.responder = EchoResponder{}
+	}
+
+	// If the responder is a RuleResponder, set its markov fallback.
+	if rr, ok := s.responder.(*RuleResponder); ok {
+		rr.markov = s.markov
 	}
 
 	// Initialize fault state.
@@ -80,7 +104,7 @@ func New(opts ...Option) *Server {
 		if rr, ok := s.responder.(*RuleResponder); ok {
 			rules = rr.rules
 		}
-		s.admin = newAdminState(rules)
+		s.admin = newAdminState(rules, s.markov)
 		// Wrap the responder: admin rules are tried first, then fallback
 		// to the original responder.
 		s.responder = &adminResponder{state: s.admin, fallback: s.responder}

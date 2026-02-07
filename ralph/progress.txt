@@ -96,3 +96,22 @@ Added fault injection system for simulating failures, errors, and latency — cr
 - Malformed fault returns broken JSON for non-streaming and broken SSE for streaming requests
 - 16 new tests: error faults on both OpenAI and Anthropic endpoints, rate limit with Retry-After header on both APIs, delay with timing verification, malformed for both stream and non-stream, timeout with context deadline, count-based auto-clearing, probability with fixed seed, admin API POST/GET/DELETE, fault-before-rules ordering, Go API WithFault, default error status
 - All 68 tests pass, build clean, vet clean, no race conditions
+
+## llmock-w2p: Markov chain text generator
+
+Added a Markov chain text generator that produces LLM-ish filler text, used as a fallback and for padding template responses:
+
+- `MarkovChain` type with configurable chain order (default 2 — bigram prefix), trained on whitespace-delimited tokens
+- Generation stops at a configurable max token count or when it hits a natural sentence ending (`.`, `!`, `?`)
+- Deterministic output with sorted key selection for reproducible generation given a fixed seed
+- Default corpus embedded via `//go:embed` containing ~2000 words of "helpful AI assistant" style text — stereotypical LLM responses about architecture, testing, best practices, security, etc.
+- `llmock.WithCorpus(r io.Reader)` option to provide a custom training corpus
+- `llmock.WithCorpusFile(path string)` convenience option to load corpus from a file
+- `llmock.WithSeed(int64)` now also seeds the Markov generator for deterministic test output
+- `MarkovResponder` implements the `Responder` interface and serves as the fallback for `RuleResponder` when no rules match (replaces the old hardcoded fallback string)
+- Template responses support `{{markov}}` (default 100 token limit) and `{{markov:N}}` (custom token limit) placeholders to splice Markov-generated text into rule responses
+- `MarkovChain` is built once at startup and is safe for concurrent reads; `MarkovResponder` uses a mutex to protect its RNG
+- `DefaultCorpusText()` exported function for test access to the embedded corpus
+- `NewMarkovResponder(seed)` and `NewMarkovChain(order)` constructors for programmatic use
+- 15 new tests: deterministic output with fixed seed, different seeds produce different output, output contains only corpus words (statistical), default corpus words-only validation, max token limit respected, empty corpus handling, order-1 chain, server integration (rule match vs Markov fallback), deterministic MarkovResponder, no-messages error, `{{markov}}` template expansion, `{{markov:N}}` with token limit, WithCorpus custom corpus, WithCorpusFile, Anthropic endpoint integration
+- All 83 tests pass, build clean, vet clean, no race conditions

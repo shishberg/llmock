@@ -5,6 +5,8 @@ import (
 	"math/rand/v2"
 	"os"
 	"regexp"
+	"strconv"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -18,10 +20,11 @@ type Rule struct {
 }
 
 // RuleResponder matches messages against an ordered list of rules.
-// The first matching rule wins. If no rule matches, a default fallback
-// response is returned.
+// The first matching rule wins. If no rule matches, the Markov fallback
+// responder is used.
 type RuleResponder struct {
-	rules []Rule
+	rules  []Rule
+	markov *MarkovResponder
 }
 
 // NewRuleResponder creates a RuleResponder from the given rules.
@@ -47,15 +50,24 @@ func (r *RuleResponder) Respond(messages []InternalMessage) (string, error) {
 			continue
 		}
 		template := rule.Responses[rand.IntN(len(rule.Responses))]
-		return expandTemplate(template, matches, input), nil
+		return expandTemplate(template, matches, input, r.markov), nil
 	}
 
+	if r.markov != nil {
+		return r.markov.Respond(messages)
+	}
 	return "That's an interesting point. Could you tell me more?", nil
 }
 
-// expandTemplate replaces $1, $2, ... with capture group values
-// and ${input} with the full original message.
-func expandTemplate(template string, matches []string, input string) string {
+// expandTemplate replaces $1, $2, ... with capture group values,
+// ${input} with the full original message, and {{markov}} or {{markov:N}}
+// with Markov-generated text.
+func expandTemplate(template string, matches []string, input string, markov *MarkovResponder) string {
+	// Handle {{markov}} and {{markov:N}} placeholders first.
+	if markov != nil && strings.Contains(template, "{{markov") {
+		template = expandMarkovPlaceholders(template, markov)
+	}
+
 	result := make([]byte, 0, len(template)*2)
 	i := 0
 	for i < len(template) {
@@ -83,6 +95,33 @@ func expandTemplate(template string, matches []string, input string) string {
 		i++
 	}
 	return string(result)
+}
+
+// expandMarkovPlaceholders replaces {{markov}} and {{markov:N}} in the template.
+func expandMarkovPlaceholders(template string, markov *MarkovResponder) string {
+	var result strings.Builder
+	i := 0
+	for i < len(template) {
+		if i+len("{{markov}}") <= len(template) && template[i:i+len("{{markov}}")] == "{{markov}}" {
+			result.WriteString(markov.GenerateMarkov(100))
+			i += len("{{markov}}")
+			continue
+		}
+		if i+len("{{markov:") <= len(template) && template[i:i+len("{{markov:")] == "{{markov:" {
+			end := strings.Index(template[i:], "}}")
+			if end != -1 {
+				numStr := template[i+len("{{markov:") : i+end]
+				if n, err := strconv.Atoi(numStr); err == nil && n > 0 {
+					result.WriteString(markov.GenerateMarkov(n))
+					i += end + 2
+					continue
+				}
+			}
+		}
+		result.WriteByte(template[i])
+		i++
+	}
+	return result.String()
 }
 
 // WithRules configures the server to use a RuleResponder with the given rules.

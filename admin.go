@@ -26,14 +26,16 @@ type adminState struct {
 	rules        []Rule
 	initialRules []Rule
 	requestLog   []requestEntry
+	markov       *MarkovResponder
 }
 
-func newAdminState(initial []Rule) *adminState {
+func newAdminState(initial []Rule, markov *MarkovResponder) *adminState {
 	cp := make([]Rule, len(initial))
 	copy(cp, initial)
 	return &adminState{
 		rules:        cp,
 		initialRules: initial,
+		markov:       markov,
 	}
 }
 
@@ -59,7 +61,7 @@ func (a *adminState) matchRules(input string) (responseText, matchedPattern stri
 		}
 		matchedPattern = rule.Pattern.String()
 		template := rule.Responses[rand.IntN(len(rule.Responses))]
-		responseText = expandTemplate(template, matches, input)
+		responseText = expandTemplate(template, matches, input, a.markov)
 		return
 	}
 	return "", ""
