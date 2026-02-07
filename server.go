@@ -55,6 +55,8 @@ type Server struct {
 	corpusText    string
 	corpusFile    string
 	markov        *MarkovResponder
+	autoToolCalls bool
+	rng           *mrand.Rand
 }
 
 // New creates a new Server with the given options.
@@ -87,13 +89,14 @@ func New(opts ...Option) *Server {
 		rr.markov = s.markov
 	}
 
-	// Initialize fault state.
+	// Initialize RNG and fault state.
 	var rng *mrand.Rand
 	if s.seed != nil {
 		rng = mrand.New(mrand.NewPCG(uint64(*s.seed), 0))
 	} else {
 		rng = mrand.New(mrand.NewPCG(mrand.Uint64(), mrand.Uint64()))
 	}
+	s.rng = rng
 	s.faults = newFaultState(s.initialFaults, rng)
 
 	// Admin API is enabled by default.
@@ -127,6 +130,15 @@ func New(opts ...Option) *Server {
 func WithAdminAPI(enabled bool) Option {
 	return func(s *Server) {
 		s.adminEnabled = &enabled
+	}
+}
+
+// WithAutoToolCalls enables auto-generation of tool calls. When enabled and
+// a request includes tool definitions but no rule produces a tool call, the
+// server picks a random tool and generates arguments from its JSON schema.
+func WithAutoToolCalls(enabled bool) Option {
+	return func(s *Server) {
+		s.autoToolCalls = enabled
 	}
 }
 
@@ -241,6 +253,14 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
+	}
+
+	// Auto-generate a tool call if enabled and no rule produced one.
+	if s.autoToolCalls && !response.IsToolCall() && len(req.Tools) > 0 {
+		reqTools := openAIToRequestTools(req.Tools)
+		if tc, ok := generateToolCallFromSchema(reqTools, s.rng); ok {
+			response = Response{ToolCalls: []ToolCall{tc}}
+		}
 	}
 
 	s.logAdminRequest(r, internal, response.Text)
@@ -449,6 +469,14 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Auto-generate a tool call if enabled and no rule produced one.
+	if s.autoToolCalls && !response.IsToolCall() && len(req.Tools) > 0 {
+		reqTools := anthropicToRequestTools(req.Tools)
+		if tc, ok := generateToolCallFromSchema(reqTools, s.rng); ok {
+			response = Response{ToolCalls: []ToolCall{tc}}
+		}
+	}
+
 	s.logAdminRequest(r, internal, response.Text)
 
 	model := req.Model
@@ -606,6 +634,30 @@ func openAIToolCallFromInternal(tc ToolCall) OpenAIToolCall {
 			Arguments: string(argsJSON),
 		},
 	}
+}
+
+// openAIToRequestTools converts OpenAI tool definitions to internal RequestTool format.
+func openAIToRequestTools(tools []OpenAIToolDef) []RequestTool {
+	out := make([]RequestTool, 0, len(tools))
+	for _, t := range tools {
+		out = append(out, RequestTool{
+			Name:       t.Function.Name,
+			Parameters: t.Function.Parameters,
+		})
+	}
+	return out
+}
+
+// anthropicToRequestTools converts Anthropic tool definitions to internal RequestTool format.
+func anthropicToRequestTools(tools []AnthropicToolDef) []RequestTool {
+	out := make([]RequestTool, 0, len(tools))
+	for _, t := range tools {
+		out = append(out, RequestTool{
+			Name:       t.Name,
+			Parameters: t.InputSchema,
+		})
+	}
+	return out
 }
 
 func writeError(w http.ResponseWriter, code int, msg string) {

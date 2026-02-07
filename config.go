@@ -31,9 +31,10 @@ type ServerConfig struct {
 
 // DefaultConfig holds default response behavior settings.
 type DefaultConfig struct {
-	TokenDelayMS int    `yaml:"token_delay_ms" json:"token_delay_ms"`
-	Seed         *int64 `yaml:"seed" json:"seed"`
-	Model        string `yaml:"model" json:"model"`
+	TokenDelayMS  int    `yaml:"token_delay_ms" json:"token_delay_ms"`
+	Seed          *int64 `yaml:"seed" json:"seed"`
+	Model         string `yaml:"model" json:"model"`
+	AutoToolCalls *bool  `yaml:"auto_tool_calls" json:"auto_tool_calls"`
 }
 
 // RuleConfig is the config-file representation of a rule.
@@ -113,6 +114,10 @@ func (c *Config) ToOptions() ([]Option, error) {
 
 	if c.Defaults.Seed != nil {
 		opts = append(opts, WithSeed(*c.Defaults.Seed))
+	}
+
+	if c.Defaults.AutoToolCalls != nil {
+		opts = append(opts, WithAutoToolCalls(*c.Defaults.AutoToolCalls))
 	}
 
 	if c.Server.AdminAPI != nil {

@@ -160,3 +160,24 @@ Added tool use / function calling simulation — rules can now respond with tool
 - Tool call IDs use `crypto/rand` for realistic-looking hex suffixes
 - 10 new tests: OpenAI basic tool call, Anthropic basic tool call, fall-through when tool not in request, capture group expansion in arguments, config file parsing, OpenAI streaming tool call, Anthropic streaming tool call, no-tools-in-request behavior, text response unchanged, ${input} template in arguments
 - All 108 tests pass, build clean, vet clean
+
+## llmock-bdd: Auto-generation mode for tool calls from JSON schema
+
+Added auto-generation of tool calls from request tool definitions — when enabled, the server generates realistic tool calls from JSON schema without needing explicit rules:
+
+- New `WithAutoToolCalls(bool)` option: enables auto-generation mode (disabled by default)
+- New `autotool.go`: `generateToolCallFromSchema` picks a random tool from the request and generates arguments conforming to its JSON schema
+- JSON schema support: handles `object`, `array`, `string`, `number`, `integer`, `boolean`, `null` types
+- `enum` support: picks a random value from the enum list
+- `required` properties: always included; optional properties included 50% of the time
+- Nested schemas: objects within objects, arrays with typed items
+- Format-aware string generation: `date` (YYYY-MM-DD), `date-time` (ISO 8601), `email`, `uri`/`url`
+- Description-aware string generation: generates city names for location/city fields, names for name fields, language codes for language fields
+- Array generation: 1-3 items matching the `items` schema
+- Integration in both handlers: auto-generation triggers when `autoToolCalls` is true, no rule produced a tool call, and tools are defined in the request
+- Helper functions: `openAIToRequestTools` and `anthropicToRequestTools` convert API-specific tool defs to internal `RequestTool` format
+- Config file support: `auto_tool_calls` boolean in `defaults` section of YAML/JSON config
+- Works with streaming: auto-generated tool calls stream identically to rule-based tool calls
+- Rule precedence preserved: explicit tool call rules always take priority over auto-generation
+- 10 new tests: OpenAI auto-generation, Anthropic auto-generation, disabled mode returns text, rule match takes precedence, multiple tools picks one, complex nested schema, no tools means no auto-gen, streaming with auto-gen, config parsing, empty parameters
+- All 118 tests pass, build clean, vet clean, no race conditions
