@@ -3,6 +3,7 @@
 3. Append your progress to the ralph/progress.txt file.
 4. Make a git commit of that feature.
 5. Close the beads task.
+6. Don't bother trying `git push`, you don't have credentials.
 
 ONLY WORK ON A SINGLE FEATURE.
 If, while implementing the feature, you notice that all work is complete, output <promise>COMPLETE</promise>.

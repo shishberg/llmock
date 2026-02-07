@@ -22,3 +22,20 @@ Added support for the Anthropic `/v1/messages` endpoint alongside the existing O
 - Returns valid Anthropic response: `id` with `msg_` prefix + random hex, `type:"message"`, `role:"assistant"`, content array with `type:"text"` blocks, `stop_reason:"end_turn"`, usage with `input_tokens`/`output_tokens`
 - 5 new tests: echo response with full structure validation, usage stats, empty messages error, invalid JSON error, cross-endpoint content consistency
 - All 13 tests pass, build clean, vet clean
+
+## llmock-64l: Regex rule matching with template expansion
+
+Added the core rule-matching engine that replaces echo responses with configurable regex-based pattern matching:
+
+- `Rule` type: compiled `*regexp.Regexp` pattern + slice of response template strings
+- `RuleResponder` implements `Responder` interface; evaluates rules in order, first match wins
+- Template expansion: `$1`, `$2`, etc. for capture groups; `${input}` for full original message
+- If no rule matches, falls back to a hardcoded default response
+- `WithRules(rules...)` functional option to configure the server
+- `WithResponder(r)` generic functional option for any `Responder` implementation
+- `NewRuleResponder(rules)` constructor; uses built-in default rules when passed empty slice
+- Built-in default rules: greetings, "I need X", "how do I X", "what is X", "help me X", "can/could/would you X", thanks, farewell, and a catchall — all styled as a helpful AI assistant
+- `LoadRulesFile(path)` and `ParseRulesYAML(data)` for loading rules from YAML config files
+- Added `gopkg.in/yaml.v3` dependency for YAML parsing
+- 14 new tests: match priority, capture group substitution, ${input} expansion, no-match fallback, random selection among multiple templates, default rules applied, Anthropic endpoint integration, WithResponder option, YAML parsing (valid, invalid regex, empty responses), file loading (valid, missing file), dollar-sign edge case
+- All 27 tests pass, build clean, vet clean
