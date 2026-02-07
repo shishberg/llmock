@@ -1,3 +1,4 @@
+@ralph/progress.txt
 1. Run `bd ready` to decide which task to work on first. This should be the one YOU decide has the highest priority - not necessarily the first in the list.
 2. Check any feedback loops, such as types and tests.
 3. Append your progress to the ralph/progress.txt file.
