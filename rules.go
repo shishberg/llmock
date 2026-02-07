@@ -13,10 +13,12 @@ import (
 
 // Rule is a compiled regex pattern with one or more response templates.
 // Templates may use $1, $2, etc. for capture groups and ${input} for the
-// full original user message.
+// full original user message. A rule may also specify a ToolCall instead
+// of (or in addition to) text responses.
 type Rule struct {
 	Pattern   *regexp.Regexp
 	Responses []string
+	ToolCall  *ToolCallConfig
 }
 
 // RuleResponder matches messages against an ordered list of rules.
@@ -38,10 +40,10 @@ func NewRuleResponder(rules []Rule) *RuleResponder {
 
 // Respond finds the first rule matching the last user message and expands
 // its response template with capture groups.
-func (r *RuleResponder) Respond(messages []InternalMessage) (string, error) {
+func (r *RuleResponder) Respond(messages []InternalMessage) (Response, error) {
 	input := extractInput(messages)
 	if input == "" {
-		return "", errNoMessages
+		return Response{}, errNoMessages
 	}
 
 	for _, rule := range r.rules {
@@ -49,14 +51,19 @@ func (r *RuleResponder) Respond(messages []InternalMessage) (string, error) {
 		if matches == nil {
 			continue
 		}
+		// If this rule specifies a tool call, return a tool call response.
+		if rule.ToolCall != nil {
+			tc := resolveToolCall(*rule.ToolCall, matches, input)
+			return Response{ToolCalls: []ToolCall{tc}}, nil
+		}
 		template := rule.Responses[rand.IntN(len(rule.Responses))]
-		return expandTemplate(template, matches, input, r.markov), nil
+		return Response{Text: expandTemplate(template, matches, input, r.markov)}, nil
 	}
 
 	if r.markov != nil {
 		return r.markov.Respond(messages)
 	}
-	return "That's an interesting point. Could you tell me more?", nil
+	return Response{Text: "That's an interesting point. Could you tell me more?"}, nil
 }
 
 // expandTemplate replaces $1, $2, ... with capture group values,
@@ -138,10 +145,11 @@ func WithResponder(r Responder) Option {
 	}
 }
 
-// ruleConfig is the YAML representation of a rule.
+// ruleConfig is the YAML representation of a rule (used by LoadRulesFile).
 type ruleConfig struct {
-	Pattern   string   `yaml:"pattern"`
-	Responses []string `yaml:"responses"`
+	Pattern   string          `yaml:"pattern"`
+	Responses []string        `yaml:"responses"`
+	ToolCall  *ToolCallConfig `yaml:"tool_call,omitempty"`
 }
 
 // rulesFileConfig is the top-level YAML structure.
@@ -170,10 +178,10 @@ func ParseRulesYAML(data []byte) ([]Rule, error) {
 		if err != nil {
 			return nil, fmt.Errorf("compiling rule %d pattern %q: %w", i, rc.Pattern, err)
 		}
-		if len(rc.Responses) == 0 {
-			return nil, fmt.Errorf("rule %d pattern %q has no responses", i, rc.Pattern)
+		if len(rc.Responses) == 0 && rc.ToolCall == nil {
+			return nil, fmt.Errorf("rule %d pattern %q has no responses or tool_call", i, rc.Pattern)
 		}
-		rules[i] = Rule{Pattern: re, Responses: rc.Responses}
+		rules[i] = Rule{Pattern: re, Responses: rc.Responses, ToolCall: rc.ToolCall}
 	}
 	return rules, nil
 }

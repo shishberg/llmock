@@ -49,8 +49,8 @@ func (a *adminState) snapshot() []Rule {
 }
 
 // matchRules tries each rule in order; returns the response and pattern on
-// match, or empty strings if nothing matched.
-func (a *adminState) matchRules(input string) (responseText, matchedPattern string) {
+// match, or empty response and string if nothing matched.
+func (a *adminState) matchRules(input string) (Response, string) {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
 
@@ -59,12 +59,17 @@ func (a *adminState) matchRules(input string) (responseText, matchedPattern stri
 		if matches == nil {
 			continue
 		}
-		matchedPattern = rule.Pattern.String()
+		matchedPattern := rule.Pattern.String()
+		// If this rule specifies a tool call, return a tool call response.
+		if rule.ToolCall != nil {
+			tc := resolveToolCall(*rule.ToolCall, matches, input)
+			return Response{ToolCalls: []ToolCall{tc}}, matchedPattern
+		}
 		template := rule.Responses[rand.IntN(len(rule.Responses))]
-		responseText = expandTemplate(template, matches, input, a.markov)
-		return
+		text := expandTemplate(template, matches, input, a.markov)
+		return Response{Text: text}, matchedPattern
 	}
-	return "", ""
+	return Response{}, ""
 }
 
 // logRequest appends an entry to the request log, keeping the last 100.
@@ -179,17 +184,17 @@ type adminResponder struct {
 	lastMatchedRule string
 }
 
-func (ar *adminResponder) Respond(messages []InternalMessage) (string, error) {
+func (ar *adminResponder) Respond(messages []InternalMessage) (Response, error) {
 	input := extractInput(messages)
 	if input == "" {
-		return "", errNoMessages
+		return Response{}, errNoMessages
 	}
-	text, matched := ar.state.matchRules(input)
+	resp, matched := ar.state.matchRules(input)
 	ar.mu.Lock()
 	ar.lastMatchedRule = matched
 	ar.mu.Unlock()
-	if text != "" {
-		return text, nil
+	if resp.Text != "" || resp.IsToolCall() {
+		return resp, nil
 	}
 	return ar.fallback.Respond(messages)
 }

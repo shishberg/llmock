@@ -172,8 +172,8 @@ func TestMarkovResponder_DeterministicWithSeed(t *testing.T) {
 	out1, _ := mr1.Respond(msgs)
 	out2, _ := mr2.Respond(msgs)
 
-	if out1 != out2 {
-		t.Errorf("expected deterministic output, got %q and %q", out1, out2)
+	if out1.Text != out2.Text {
+		t.Errorf("expected deterministic output, got %q and %q", out1.Text, out2.Text)
 	}
 }
 

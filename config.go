@@ -38,9 +38,10 @@ type DefaultConfig struct {
 
 // RuleConfig is the config-file representation of a rule.
 type RuleConfig struct {
-	Pattern   string   `yaml:"pattern" json:"pattern"`
-	Responses []string `yaml:"responses" json:"responses"`
-	DelayMS   int      `yaml:"delay_ms,omitempty" json:"delay_ms,omitempty"`
+	Pattern   string          `yaml:"pattern" json:"pattern"`
+	Responses []string        `yaml:"responses" json:"responses"`
+	DelayMS   int             `yaml:"delay_ms,omitempty" json:"delay_ms,omitempty"`
+	ToolCall  *ToolCallConfig `yaml:"tool_call,omitempty" json:"tool_call,omitempty"`
 }
 
 // LoadConfig reads a config file (YAML or JSON) from the given path.
@@ -89,10 +90,10 @@ func CompileRules(configs []RuleConfig) ([]Rule, error) {
 		if err != nil {
 			return nil, fmt.Errorf("compiling rule %d pattern %q: %w", i, rc.Pattern, err)
 		}
-		if len(rc.Responses) == 0 {
-			return nil, fmt.Errorf("rule %d pattern %q has no responses", i, rc.Pattern)
+		if len(rc.Responses) == 0 && rc.ToolCall == nil {
+			return nil, fmt.Errorf("rule %d pattern %q has no responses or tool_call", i, rc.Pattern)
 		}
-		rules[i] = Rule{Pattern: re, Responses: rc.Responses}
+		rules[i] = Rule{Pattern: re, Responses: rc.Responses, ToolCall: rc.ToolCall}
 	}
 	return rules, nil
 }

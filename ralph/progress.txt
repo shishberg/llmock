@@ -138,3 +138,25 @@ Added config file support and made the standalone CLI server production-ready:
 - Graceful shutdown on SIGINT/SIGTERM with 5-second timeout via `http.Server.Shutdown()`
 - 15 new tests: YAML parsing (full config), JSON parsing, invalid YAML/JSON errors, file loading (valid and missing), `FindDefaultConfig` (none, yaml, json), `CompileRules` (valid, invalid regex, no responses), `ToOptions` (full config, invalid rule, empty config), config with faults, token delay option
 - All 98 tests pass, build clean, vet clean, no race conditions
+
+## llmock-ass: Tool call rule matching and OpenAI/Anthropic response format
+
+Added tool use / function calling simulation — rules can now respond with tool calls instead of text, enabling testing of tool-use workflows:
+
+- New `ToolCallConfig` struct: `name` (tool function name) + `arguments` (map with template expansion support for `$1`, `$2`, `${input}`)
+- `Rule` extended with optional `ToolCall *ToolCallConfig` field — rules can specify either text responses or a tool call
+- `Response` type replaces raw `string` as the return value from `Responder.Respond()`, carrying either `Text` or `ToolCalls`
+- `Responder` interface updated: `Respond([]InternalMessage) (Response, error)` — all implementations updated (EchoResponder, RuleResponder, MarkovResponder, adminResponder)
+- OpenAI tool call response format: `choices[0].message.tool_calls` array with `id` (prefix `call_`), `type:"function"`, `function.name`, `function.arguments` (JSON string)
+- Anthropic tool call response format: `content` array with `type:"tool_use"` blocks containing `id` (prefix `toolu_`), `name`, `input` (object)
+- Tool validation: when request includes `tools` array, only tool calls matching defined tool names are returned; non-matching tool calls fall through to text response
+- OpenAI request type extended with `Tools []OpenAIToolDef` (type + function name/description/parameters)
+- Anthropic request type extended with `Tools []AnthropicToolDef` (name, description, input_schema)
+- `ChoiceMessage` type replaces `Message` in response choices to support both `content` (text) and `tool_calls` fields with proper JSON omitempty
+- Streaming tool calls for OpenAI: chunks stream function name first, then arguments in 20-byte increments, final chunk with `finish_reason:"tool_calls"`
+- Streaming tool calls for Anthropic: `content_block_start` with `tool_use` type, `content_block_delta` with `input_json_delta` partial chunks, `message_delta` with `stop_reason:"tool_use"`
+- Config file support: `tool_call` field in YAML/JSON rule config with `name` and `arguments`
+- `CompileRules` and `ParseRulesYAML` updated to accept rules with `tool_call` instead of `responses`
+- Tool call IDs use `crypto/rand` for realistic-looking hex suffixes
+- 10 new tests: OpenAI basic tool call, Anthropic basic tool call, fall-through when tool not in request, capture group expansion in arguments, config file parsing, OpenAI streaming tool call, Anthropic streaming tool call, no-tools-in-request behavior, text response unchanged, ${input} template in arguments
+- All 108 tests pass, build clean, vet clean

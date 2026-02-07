@@ -27,19 +27,19 @@ type InternalMessage struct {
 
 // Responder generates a response given a conversation.
 type Responder interface {
-	Respond(messages []InternalMessage) (string, error)
+	Respond(messages []InternalMessage) (Response, error)
 }
 
 // EchoResponder echoes the last user message (or last message if no user message).
 type EchoResponder struct{}
 
 // Respond returns the last user message content, or the last message if there is no user message.
-func (e EchoResponder) Respond(messages []InternalMessage) (string, error) {
+func (e EchoResponder) Respond(messages []InternalMessage) (Response, error) {
 	input := extractInput(messages)
 	if input == "" {
-		return "", errNoMessages
+		return Response{}, errNoMessages
 	}
-	return input, nil
+	return Response{Text: input}, nil
 }
 
 // Server is a mock LLM API server.
@@ -137,11 +137,25 @@ func (s *Server) Handler() http.Handler {
 
 // ChatCompletionRequest represents an OpenAI chat completion request.
 type ChatCompletionRequest struct {
-	Model       string    `json:"model"`
-	Messages    []Message `json:"messages"`
-	Stream      bool      `json:"stream,omitempty"`
-	Temperature *float64  `json:"temperature,omitempty"`
-	MaxTokens   *int      `json:"max_tokens,omitempty"`
+	Model       string           `json:"model"`
+	Messages    []Message        `json:"messages"`
+	Stream      bool             `json:"stream,omitempty"`
+	Temperature *float64         `json:"temperature,omitempty"`
+	MaxTokens   *int             `json:"max_tokens,omitempty"`
+	Tools       []OpenAIToolDef  `json:"tools,omitempty"`
+}
+
+// OpenAIToolDef represents a tool definition in an OpenAI request.
+type OpenAIToolDef struct {
+	Type     string              `json:"type"`
+	Function OpenAIFunctionDef   `json:"function"`
+}
+
+// OpenAIFunctionDef describes a function tool in an OpenAI request.
+type OpenAIFunctionDef struct {
+	Name        string         `json:"name"`
+	Description string         `json:"description,omitempty"`
+	Parameters  map[string]any `json:"parameters,omitempty"`
 }
 
 // Message represents a chat message.
@@ -160,11 +174,32 @@ type ChatCompletionResponse struct {
 	Usage   Usage    `json:"usage"`
 }
 
+// ChoiceMessage represents the message in a response choice, which may
+// contain either text content or tool calls.
+type ChoiceMessage struct {
+	Role      string           `json:"role"`
+	Content   string           `json:"content,omitempty"`
+	ToolCalls []OpenAIToolCall `json:"tool_calls,omitempty"`
+}
+
+// OpenAIToolCall represents a tool call in an OpenAI response.
+type OpenAIToolCall struct {
+	ID       string             `json:"id"`
+	Type     string             `json:"type"`
+	Function OpenAIFunctionCall `json:"function"`
+}
+
+// OpenAIFunctionCall represents the function details in a tool call.
+type OpenAIFunctionCall struct {
+	Name      string `json:"name"`
+	Arguments string `json:"arguments"` // JSON-encoded arguments
+}
+
 // Choice represents a response choice.
 type Choice struct {
-	Index        int     `json:"index"`
-	Message      Message `json:"message"`
-	FinishReason string  `json:"finish_reason"`
+	Index        int          `json:"index"`
+	Message      ChoiceMessage `json:"message"`
+	FinishReason string       `json:"finish_reason"`
 }
 
 // Usage represents token usage statistics.
@@ -202,16 +237,13 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	}
 
 	internal := toInternalMessages(req.Messages)
-	responseText, err := s.responder.Respond(internal)
+	response, err := s.responder.Respond(internal)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 
-	s.logAdminRequest(r, internal, responseText)
-
-	promptTokens := estimateTokens(req.Messages)
-	completionTokens := countTokens(responseText)
+	s.logAdminRequest(r, internal, response.Text)
 
 	model := req.Model
 	if model == "" {
@@ -219,6 +251,72 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	}
 
 	id := fmt.Sprintf("chatcmpl-mock-%d", time.Now().UnixNano())
+
+	if response.IsToolCall() {
+		// Tool call response: check that requested tools contain the called tool.
+		if len(req.Tools) > 0 {
+			toolNames := make(map[string]bool)
+			for _, t := range req.Tools {
+				if t.Function.Name != "" {
+					toolNames[t.Function.Name] = true
+				}
+			}
+			var validCalls []ToolCall
+			for _, tc := range response.ToolCalls {
+				if toolNames[tc.Name] {
+					validCalls = append(validCalls, tc)
+				}
+			}
+			if len(validCalls) == 0 {
+				// No valid tool calls; fall through to text response.
+				goto textResponse
+			}
+			response.ToolCalls = validCalls
+		}
+
+		promptTokens := estimateTokens(req.Messages)
+		completionTokens := 5 // rough estimate for tool call tokens
+
+		if req.Stream {
+			s.streamOpenAIToolCall(w, r, response.ToolCalls, model, id)
+			return
+		}
+
+		toolCalls := make([]OpenAIToolCall, len(response.ToolCalls))
+		for i, tc := range response.ToolCalls {
+			toolCalls[i] = openAIToolCallFromInternal(tc)
+		}
+
+		resp := ChatCompletionResponse{
+			ID:      id,
+			Object:  "chat.completion",
+			Created: time.Now().Unix(),
+			Model:   model,
+			Choices: []Choice{
+				{
+					Index: 0,
+					Message: ChoiceMessage{
+						Role:      "assistant",
+						ToolCalls: toolCalls,
+					},
+					FinishReason: "tool_calls",
+				},
+			},
+			Usage: Usage{
+				PromptTokens:     promptTokens,
+				CompletionTokens: completionTokens,
+				TotalTokens:      promptTokens + completionTokens,
+			},
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(resp)
+		return
+	}
+
+textResponse:
+	responseText := response.Text
+	promptTokens := estimateTokens(req.Messages)
+	completionTokens := countTokens(responseText)
 
 	if req.Stream {
 		s.streamOpenAI(w, r, responseText, model, id)
@@ -232,8 +330,11 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		Model:   model,
 		Choices: []Choice{
 			{
-				Index:        0,
-				Message:      Message{Role: "assistant", Content: responseText},
+				Index: 0,
+				Message: ChoiceMessage{
+					Role:    "assistant",
+					Content: responseText,
+				},
 				FinishReason: "stop",
 			},
 		},
@@ -250,10 +351,18 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 
 // AnthropicRequest represents an Anthropic Messages API request.
 type AnthropicRequest struct {
-	Model     string             `json:"model"`
-	Messages  []AnthropicMessage `json:"messages"`
-	MaxTokens int                `json:"max_tokens"`
-	Stream    bool               `json:"stream,omitempty"`
+	Model     string               `json:"model"`
+	Messages  []AnthropicMessage   `json:"messages"`
+	MaxTokens int                  `json:"max_tokens"`
+	Stream    bool                 `json:"stream,omitempty"`
+	Tools     []AnthropicToolDef   `json:"tools,omitempty"`
+}
+
+// AnthropicToolDef represents a tool definition in an Anthropic request.
+type AnthropicToolDef struct {
+	Name        string         `json:"name"`
+	Description string         `json:"description,omitempty"`
+	InputSchema map[string]any `json:"input_schema,omitempty"`
 }
 
 // AnthropicMessage represents a message in the Anthropic format.
@@ -275,9 +384,14 @@ type AnthropicResponse struct {
 }
 
 // AnthropicContentBlock represents a content block in an Anthropic response.
+// For text blocks: Type="text", Text is set.
+// For tool_use blocks: Type="tool_use", ID/Name/Input are set.
 type AnthropicContentBlock struct {
-	Type string `json:"type"`
-	Text string `json:"text"`
+	Type  string         `json:"type"`
+	Text  string         `json:"text,omitempty"`
+	ID    string         `json:"id,omitempty"`
+	Name  string         `json:"name,omitempty"`
+	Input map[string]any `json:"input,omitempty"`
 }
 
 // AnthropicUsage represents token usage in an Anthropic response.
@@ -329,16 +443,13 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	}
 
 	internal := anthropicToInternal(req.Messages)
-	responseText, err := s.responder.Respond(internal)
+	response, err := s.responder.Respond(internal)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 
-	s.logAdminRequest(r, internal, responseText)
-
-	inputTokens := estimateAnthropicTokens(req.Messages)
-	outputTokens := countTokens(responseText)
+	s.logAdminRequest(r, internal, response.Text)
 
 	model := req.Model
 	if model == "" {
@@ -346,6 +457,66 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	}
 
 	id := fmt.Sprintf("msg_%s", randomHex(12))
+
+	if response.IsToolCall() {
+		// Validate tool calls against request tools.
+		if len(req.Tools) > 0 {
+			toolNames := make(map[string]bool)
+			for _, t := range req.Tools {
+				if t.Name != "" {
+					toolNames[t.Name] = true
+				}
+			}
+			var validCalls []ToolCall
+			for _, tc := range response.ToolCalls {
+				if toolNames[tc.Name] {
+					validCalls = append(validCalls, tc)
+				}
+			}
+			if len(validCalls) == 0 {
+				goto anthropicTextResponse
+			}
+			response.ToolCalls = validCalls
+		}
+
+		inputTokens := estimateAnthropicTokens(req.Messages)
+		outputTokens := 5
+
+		if req.Stream {
+			s.streamAnthropicToolCall(w, r, response.ToolCalls, model, id, inputTokens)
+			return
+		}
+
+		content := make([]AnthropicContentBlock, len(response.ToolCalls))
+		for i, tc := range response.ToolCalls {
+			// Use Anthropic-style ID
+			tcID := generateToolCallID("toolu_")
+			content[i] = AnthropicContentBlock{
+				Type:  "tool_use",
+				ID:    tcID,
+				Name:  tc.Name,
+				Input: tc.Arguments,
+			}
+		}
+
+		resp := AnthropicResponse{
+			ID:         id,
+			Type:       "message",
+			Role:       "assistant",
+			Content:    content,
+			Model:      model,
+			StopReason: "tool_use",
+			Usage:      AnthropicUsage{InputTokens: inputTokens, OutputTokens: outputTokens},
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(resp)
+		return
+	}
+
+anthropicTextResponse:
+	responseText := response.Text
+	inputTokens := estimateAnthropicTokens(req.Messages)
+	outputTokens := countTokens(responseText)
 
 	if req.Stream {
 		s.streamAnthropic(w, r, responseText, model, id, inputTokens)
@@ -422,6 +593,19 @@ func extractInput(messages []InternalMessage) string {
 		return messages[len(messages)-1].Content
 	}
 	return ""
+}
+
+// openAIToolCallFromInternal converts an internal ToolCall to the OpenAI format.
+func openAIToolCallFromInternal(tc ToolCall) OpenAIToolCall {
+	argsJSON, _ := json.Marshal(tc.Arguments)
+	return OpenAIToolCall{
+		ID:   tc.ID,
+		Type: "function",
+		Function: OpenAIFunctionCall{
+			Name:      tc.Name,
+			Arguments: string(argsJSON),
+		},
+	}
 }
 
 func writeError(w http.ResponseWriter, code int, msg string) {

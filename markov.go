@@ -126,17 +126,17 @@ func NewMarkovResponder(seed *int64) *MarkovResponder {
 }
 
 // Respond generates a Markov chain response.
-func (mr *MarkovResponder) Respond(messages []InternalMessage) (string, error) {
+func (mr *MarkovResponder) Respond(messages []InternalMessage) (Response, error) {
 	if extractInput(messages) == "" {
-		return "", errNoMessages
+		return Response{}, errNoMessages
 	}
 	mr.mu.Lock()
 	text := mr.chain.Generate(100, mr.rng)
 	mr.mu.Unlock()
 	if text == "" {
-		return "I understand. Could you tell me more about that?", nil
+		return Response{Text: "I understand. Could you tell me more about that?"}, nil
 	}
-	return text, nil
+	return Response{Text: text}, nil
 }
 
 // GenerateMarkov produces Markov text with the given token limit, for use in templates.
