@@ -218,3 +218,15 @@ Verified that MCP config loading for tools, resources, and prompts was already f
 - `Config.ToOptions()` in config.go:144-146 converts parsed MCP config to `WithMCP()` functional option
 - `TestMCPConfigIntegration` in mcp_test.go:865-923 validates the full flow: YAML config with tools/resources/prompts -> `ParseConfig()` -> `ToOptions()` -> `New()` -> working MCP server endpoint
 - All 144 tests pass, build clean, vet clean
+
+## llmock-ccu: MCP: POST /mcp endpoint with initialize, tools/list, tools/call
+
+Verified that this task was already fully implemented as part of llmock-2fo. The POST /mcp endpoint with all required methods (initialize, tools/list, tools/call) is working and tested:
+
+- `POST /mcp` route registered in server.go:129 when MCP is enabled
+- `handleMCP` handler in mcp.go parses JSON-RPC 2.0 requests and dispatches to method handlers
+- `initialize` returns protocol version "2025-03-26", server info, and capabilities
+- `tools/list` returns configured tools with name, description, and inputSchema
+- `tools/call` executes tool calls with regex pattern matching on arguments; Markov fallback when no pattern matches
+- All 26 MCP tests pass (144 total), build clean, vet clean
+- Closed as already complete — no additional code changes needed
