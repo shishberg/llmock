@@ -43,8 +43,9 @@ func (e EchoResponder) Respond(messages []InternalMessage) (string, error) {
 
 // Server is a mock LLM API server.
 type Server struct {
-	mux       *http.ServeMux
-	responder Responder
+	mux        *http.ServeMux
+	responder  Responder
+	tokenDelay time.Duration
 }
 
 // New creates a new Server with the given options.
@@ -140,8 +141,15 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		model = "llmock-1"
 	}
 
+	id := fmt.Sprintf("chatcmpl-mock-%d", time.Now().UnixNano())
+
+	if req.Stream {
+		s.streamOpenAI(w, r, responseText, model, id)
+		return
+	}
+
 	resp := ChatCompletionResponse{
-		ID:      fmt.Sprintf("chatcmpl-mock-%d", time.Now().UnixNano()),
+		ID:      id,
 		Object:  "chat.completion",
 		Created: time.Now().Unix(),
 		Model:   model,
@@ -250,8 +258,15 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		model = "llmock-1"
 	}
 
+	id := fmt.Sprintf("msg_%s", randomHex(12))
+
+	if req.Stream {
+		s.streamAnthropic(w, r, responseText, model, id, inputTokens)
+		return
+	}
+
 	resp := AnthropicResponse{
-		ID:         fmt.Sprintf("msg_%s", randomHex(12)),
+		ID:         id,
 		Type:       "message",
 		Role:       "assistant",
 		Content:    []AnthropicContentBlock{{Type: "text", Text: responseText}},

@@ -39,3 +39,20 @@ Added the core rule-matching engine that replaces echo responses with configurab
 - Added `gopkg.in/yaml.v3` dependency for YAML parsing
 - 14 new tests: match priority, capture group substitution, ${input} expansion, no-match fallback, random selection among multiple templates, default rules applied, Anthropic endpoint integration, WithResponder option, YAML parsing (valid, invalid regex, empty responses), file loading (valid, missing file), dollar-sign edge case
 - All 27 tests pass, build clean, vet clean
+
+## llmock-rgg: SSE streaming responses
+
+Added Server-Sent Events streaming support for both OpenAI and Anthropic API formats:
+
+- When `stream: true` is set in the request, responses are streamed token-by-token via SSE
+- OpenAI streaming format: `data: {...}\n\n` chunks with `chat.completion.chunk` object type, `delta` containing content, final chunk with `finish_reason: "stop"`, terminated by `data: [DONE]\n\n`
+- Anthropic streaming format: full event sequence — `message_start` → `content_block_start` → multiple `content_block_delta` events → `content_block_stop` → `message_delta` (with `stop_reason` and `output_tokens`) → `message_stop`
+- Tokenization splits response text into randomized 1-3 word chunks for natural-feeling streaming
+- Configurable inter-token delay via `llmock.WithTokenDelay(d)` (default 15ms)
+- Proper SSE headers: `Content-Type: text/event-stream`, `Cache-Control: no-cache`, `Connection: keep-alive`
+- Uses `http.Flusher` to flush after each chunk for real streaming behavior
+- Handles client disconnection gracefully via context cancellation
+- Non-streaming requests continue to work unchanged for both API formats
+- New `stream.go` file with all streaming logic; handlers in `server.go` branch on `req.Stream`
+- 9 new tests: OpenAI chunk format validation, content reconstruction, non-stream still works, Anthropic event sequence validation, Anthropic content reconstruction, non-stream still works, message_delta stop_reason, WithTokenDelay, consistent ID across chunks
+- All 36 tests pass, build clean, vet clean
