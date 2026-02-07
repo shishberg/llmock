@@ -304,3 +304,29 @@ Added stdio transport for the MCP control plane, enabling AI agents to interact 
 - CLI `--mcp-stdio` flag in `cmd/llmock/main.go`: when set, runs the control plane over stdin/stdout instead of starting the HTTP server; exits with error if admin API is disabled
 - 13 new tests: initialize, tools/list, add rule + list rules, multiple requests in batch, invalid JSON, invalid JSON-RPC version, method not found, blank lines skipped, nil when admin disabled, request ID preservation (string and integer), full workflow (add rule + verify), add fault + clear fault, full reset
 - All 186 tests pass, build clean, vet clean, no race conditions
+
+## llmock-1al: Gemini/Vertex AI API backend
+
+Added support for the Google Gemini API format so `genai.Client` can be pointed directly at llmock via `HTTPOptions.BaseURL`, eliminating the need for genai→OpenAI→genai adapters in consumers:
+
+- New `gemini.go` file with complete Gemini API implementation:
+  - `GeminiRequest` type: `contents` (role + parts), `systemInstruction`, `generationConfig` (temperature, maxOutputTokens, topP, topK), `tools` (functionDeclarations)
+  - `GeminiContent`/`GeminiPart` types: uniform content model with `text`, `functionCall` (name + args), and `functionResponse` (name + response) parts
+  - `GeminiResponse` type: `candidates` array with `content` (role + parts) and `finishReason`, plus `usageMetadata` (promptTokenCount, candidatesTokenCount, totalTokenCount)
+- Two routes via prefix routing on `POST /v1beta/models/`:
+  - `POST /v1beta/models/{model}:generateContent` — non-streaming responses
+  - `POST /v1beta/models/{model}:streamGenerateContent?alt=sse` — SSE streaming responses
+- Gemini-to-internal message conversion: maps `model` role to `assistant`, handles `systemInstruction` as system message, skips model messages with only function calls
+- `functionResponse` parts extract `result` field text for rule matching in multi-turn tool use conversations
+- Tool call responses: parts with `functionCall` (name + args) in the Gemini format
+- Tool call validation: only returns tool calls matching function declarations in the request; falls through to text response otherwise
+- Auto-tool-call generation works with Gemini `functionDeclarations` format, converting to internal `RequestTool` format
+- SSE streaming: each `data:` line is a complete `GeminiResponse` JSON chunk; last chunk includes `finishReason: "STOP"` and `usageMetadata`
+- Streaming tool calls: sent as a single SSE chunk with all function call parts
+- Gemini-specific error format: `{"error": {"code": <int>, "message": "...", "status": "..."}}`
+- Fault injection support: error faults, rate limit faults (429 + Retry-After), and timeout faults all use Gemini error format
+- Model name extracted from URL path (e.g., `gemini-pro`, `gemini-1.5-flash`)
+- Full integration with admin API: rule injection, request logging, fault injection all work with Gemini endpoint
+- Cross-endpoint consistency: same messages produce identical responses on OpenAI, Anthropic, and Gemini endpoints
+- 23 new tests: echo response with structure validation, usage metadata, empty contents error, invalid JSON error, model extraction from path, system instruction handling, default rules response, multi-turn conversation, SSE streaming with content reconstruction, non-stream still works, tool call response, tool call fall-through, auto-tool-calls, function response multi-turn, streaming tool call, error fault format, rate limit fault, admin rule injection, cross-endpoint consistency, request logging, stream empty contents error, stream invalid JSON error, config-loaded rules
+- All 209 tests pass, build clean, vet clean, no race conditions

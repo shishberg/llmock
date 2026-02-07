@@ -168,6 +168,14 @@ func (s *Server) executeFault(w http.ResponseWriter, r *http.Request, f Fault, a
 						"role": "assistant",
 					},
 				})
+			} else if apiFormat == "gemini" {
+				partial := map[string]any{
+					"candidates": []map[string]any{
+						{"content": map[string]any{"role": "model", "parts": []map[string]any{{"text": ""}}}},
+					},
+				}
+				data, _ := json.Marshal(partial)
+				fmt.Fprintf(w, "data: %s\n\n", data)
 			} else {
 				fmt.Fprintf(w, "data: {\"id\":\"chatcmpl-timeout\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"delta\":{\"role\":\"assistant\"},\"index\":0}]}\n\n")
 			}
@@ -213,6 +221,14 @@ func writeFaultError(w http.ResponseWriter, status int, message, errType, apiFor
 			"error": map[string]any{
 				"type":    errType,
 				"message": message,
+			},
+		})
+	} else if apiFormat == "gemini" {
+		json.NewEncoder(w).Encode(map[string]any{
+			"error": map[string]any{
+				"code":    status,
+				"message": message,
+				"status":  http.StatusText(status),
 			},
 		})
 	} else {

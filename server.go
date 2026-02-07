@@ -125,6 +125,7 @@ func New(opts ...Option) *Server {
 	s.mux = http.NewServeMux()
 	s.mux.HandleFunc("POST /v1/chat/completions", s.handleChatCompletions)
 	s.mux.HandleFunc("POST /v1/messages", s.handleMessages)
+	s.mux.HandleFunc("POST /v1beta/models/", s.handleGeminiRoute)
 
 	if s.mcpEnabled {
 		s.mux.HandleFunc("POST /mcp", s.handleMCP)
