@@ -1,0 +1,12 @@
+## llmock-o9r: Core handler with hardcoded echo response (OpenAI format)
+
+Implemented the foundation of the mock LLM API server:
+
+- Created `Server` struct with functional options pattern (`Option`, `New()`, `Handler()`)
+- Implemented `POST /v1/chat/completions` endpoint that echoes the last user message
+- Response follows OpenAI ChatCompletion format: id, object, created, model, choices, usage
+- Token estimation based on word count (~1.3 tokens/word + per-message overhead)
+- Proper error handling: 400 for bad JSON/empty messages, 405 for wrong method, 404 for unknown paths
+- `cmd/llmock/main.go` starts server on configurable port (flag, env var, default 9090)
+- 8 tests using httptest covering: echo response, usage stats, error cases, default model, fallback behavior
+- All tests pass, build clean, vet clean
