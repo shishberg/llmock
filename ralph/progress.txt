@@ -289,3 +289,18 @@ Added an MCP control plane endpoint (`POST /mcp/control`) that exposes llmock's 
 - New `control.go` with all tool definitions, dispatch logic, and tool call implementations
 - 18 new tests: initialize handshake, tools/list with all 9 tools, add rule + verify via chat request, invalid regex error, rule priority, list rules, reset rules, add fault + verify via HTTP 503, list faults, clear faults, list requests, clear requests, full reset (rules + faults + log), unknown tool error, admin-disabled returns 404, method not found, invalid JSON parse error, coexistence with mock MCP server
 - All 173 tests pass, build clean, vet clean, no race conditions
+
+## llmock-ed6: MCP control plane: stdio transport for standalone use
+
+Added stdio transport for the MCP control plane, enabling AI agents to interact with llmock's admin functionality via stdin/stdout without an HTTP server:
+
+- New `StdioTransport` type in `stdio.go` that reads newline-delimited JSON-RPC 2.0 requests from an `io.Reader` and writes responses to an `io.Writer`
+- `NewStdioTransport(s *Server)` constructor that creates a transport backed by the server's control plane; returns nil if admin API is disabled
+- `Run(r io.Reader, w io.Writer)` reads requests line by line, dispatches through the control plane, and writes one JSON-RPC response per line
+- Handles blank lines (skipped), invalid JSON (`-32700` parse error), invalid JSON-RPC version (`-32600`), and all method dispatch (initialize, tools/list, tools/call)
+- Uses `bufio.Scanner` with 1 MB max line size for large JSON-RPC messages
+- Write serialization via `sync.Mutex` for safe concurrent use
+- All 9 control tools (add/list/reset rules, add/list/clear faults, list/clear requests, full reset) work identically over stdio as they do over HTTP
+- CLI `--mcp-stdio` flag in `cmd/llmock/main.go`: when set, runs the control plane over stdin/stdout instead of starting the HTTP server; exits with error if admin API is disabled
+- 13 new tests: initialize, tools/list, add rule + list rules, multiple requests in batch, invalid JSON, invalid JSON-RPC version, method not found, blank lines skipped, nil when admin disabled, request ID preservation (string and integer), full workflow (add rule + verify), add fault + clear fault, full reset
+- All 186 tests pass, build clean, vet clean, no race conditions

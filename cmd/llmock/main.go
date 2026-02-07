@@ -18,6 +18,7 @@ func main() {
 	configPath := flag.String("config", "", "path to config file (YAML or JSON)")
 	port := flag.Int("port", 0, "port to listen on (overrides config)")
 	verbose := flag.Bool("verbose", false, "log all requests/responses to stderr")
+	mcpStdio := flag.Bool("mcp-stdio", false, "run MCP control plane over stdin/stdout (no HTTP server)")
 	flag.Parse()
 
 	// Load config: explicit --config, or auto-discover, or defaults.
@@ -57,6 +58,19 @@ func main() {
 	}
 
 	s := llmock.New(opts...)
+
+	// MCP stdio mode: run control plane over stdin/stdout instead of HTTP.
+	if *mcpStdio {
+		st := llmock.NewStdioTransport(s)
+		if st == nil {
+			log.Fatal("llmock: --mcp-stdio requires admin API to be enabled")
+		}
+		log.Printf("llmock: MCP control plane running on stdio")
+		if err := st.Run(os.Stdin, os.Stdout); err != nil {
+			log.Fatalf("llmock: stdio error: %v", err)
+		}
+		return
+	}
 
 	var handler http.Handler = s.Handler()
 	if *verbose {
