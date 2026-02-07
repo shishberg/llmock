@@ -57,6 +57,9 @@ type Server struct {
 	markov        *MarkovResponder
 	autoToolCalls bool
 	rng           *mrand.Rand
+	mcpEnabled    bool
+	mcpConfig     MCPConfig
+	mcp           *mcpState
 }
 
 // New creates a new Server with the given options.
@@ -113,13 +116,25 @@ func New(opts ...Option) *Server {
 		s.responder = &adminResponder{state: s.admin, fallback: s.responder}
 	}
 
+	// Initialize MCP if enabled.
+	if s.mcpEnabled {
+		s.mcp = newMCPState(s.mcpConfig)
+	}
+
 	s.mux = http.NewServeMux()
 	s.mux.HandleFunc("POST /v1/chat/completions", s.handleChatCompletions)
 	s.mux.HandleFunc("POST /v1/messages", s.handleMessages)
 
+	if s.mcpEnabled {
+		s.mux.HandleFunc("POST /mcp", s.handleMCP)
+	}
+
 	if adminOn {
 		registerAdminRoutes(s.mux, s.admin)
 		registerFaultRoutes(s.mux, s.faults)
+		if s.mcpEnabled {
+			registerMCPAdminRoutes(s.mux, s.mcp)
+		}
 	}
 
 	return s

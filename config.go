@@ -19,8 +19,9 @@ type Config struct {
 	Defaults DefaultConfig `yaml:"defaults" json:"defaults"`
 	Rules    []RuleConfig  `yaml:"rules" json:"rules"`
 
-	CorpusFile string  `yaml:"corpus_file" json:"corpus_file"`
-	Faults     []Fault `yaml:"faults" json:"faults"`
+	CorpusFile string    `yaml:"corpus_file" json:"corpus_file"`
+	Faults     []Fault   `yaml:"faults" json:"faults"`
+	MCP        *MCPConfig `yaml:"mcp,omitempty" json:"mcp,omitempty"`
 }
 
 // ServerConfig holds server-level settings.
@@ -138,6 +139,10 @@ func (c *Config) ToOptions() ([]Option, error) {
 
 	for _, f := range c.Faults {
 		opts = append(opts, WithFault(f))
+	}
+
+	if c.MCP != nil {
+		opts = append(opts, WithMCP(*c.MCP))
 	}
 
 	return opts, nil

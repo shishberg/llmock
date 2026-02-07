@@ -181,3 +181,30 @@ Added auto-generation of tool calls from request tool definitions — when enabl
 - Rule precedence preserved: explicit tool call rules always take priority over auto-generation
 - 10 new tests: OpenAI auto-generation, Anthropic auto-generation, disabled mode returns text, rule match takes precedence, multiple tools picks one, complex nested schema, no tools means no auto-gen, streaming with auto-gen, config parsing, empty parameters
 - All 118 tests pass, build clean, vet clean, no race conditions
+
+## llmock-2fo: MCP core types and JSON-RPC 2.0 message handling
+
+Added MCP (Model Context Protocol) server simulation with full JSON-RPC 2.0 support, enabling testing of MCP client integrations without a real MCP server:
+
+- New `mcp.go` file with complete MCP implementation:
+  - JSON-RPC 2.0 types: `jsonRPCRequest`, `jsonRPCResponse`, `jsonRPCErr` with standard error codes (parse error -32700, invalid request -32600, method not found -32601, invalid params -32602)
+  - MCP config types: `MCPToolConfig` (name, description, input_schema, pattern-matched responses), `MCPResourceConfig` (uri, name, mime_type, content), `MCPPromptConfig` (name, description, arguments, template)
+  - `MCPConfig` struct aggregating tools, resources, and prompts
+  - Thread-safe `mcpState` with `sync.RWMutex` for concurrent access to tools, resources, and prompts
+- `POST /mcp` endpoint handling all core MCP methods:
+  - `initialize` — returns protocol version, server info (name: "llmock"), and capabilities (tools, resources, prompts)
+  - `tools/list` — returns configured tools with name, description, and inputSchema
+  - `tools/call` — executes tool call with pattern matching on JSON-serialized arguments; falls back to Markov-generated text when no pattern matches
+  - `resources/list` — returns configured resources with uri, name, and optional mimeType
+  - `resources/read` — returns resource content by URI with mimeType (defaults to "text/plain")
+  - `prompts/list` — returns configured prompts with name, description, and arguments
+  - `prompts/get` — returns prompt with `{{argName}}` template expansion from provided arguments
+- MCP is optional — disabled by default, enabled via `WithMCP(MCPConfig{...})` option or `mcp:` section in YAML/JSON config
+- Runtime injection via admin API endpoints:
+  - `GET/POST/DELETE /_mock/mcp/tools` — inspect, add, and clear MCP tools
+  - `GET/POST/DELETE /_mock/mcp/resources` — inspect, add, and clear MCP resources
+  - `GET/POST/DELETE /_mock/mcp/prompts` — inspect, add, and clear MCP prompts
+- Config file integration: `mcp` section in YAML/JSON config with `tools`, `resources`, `prompts` arrays
+- Tool call pattern matching: responses support regex patterns matched against JSON-serialized arguments (same approach as main API rule matching)
+- 26 new tests: disabled-by-default, initialize handshake, invalid JSON (parse error), invalid JSON-RPC version, method not found, tools/list (with tools and empty), tools/call (pattern matching, second pattern, unknown tool, missing name, Markov fallback), resources/list (with mimeType), resources/read (found, not found, missing uri), prompts/list, prompts/get (template expansion, not found, missing name), request ID preservation (integer and string), full handshake sequence (7-step), admin tools/resources/prompts endpoints (GET/POST/DELETE), config YAML integration
+- All 144 tests pass, build clean, vet clean
