@@ -14,7 +14,7 @@ import (
 
 func newStreamTestServer(t *testing.T) *httptest.Server {
 	t.Helper()
-	s := llmock.New(llmock.WithTokenDelay(0))
+	s := llmock.New(llmock.WithResponder(llmock.EchoResponder{}), llmock.WithTokenDelay(0))
 	return httptest.NewServer(s.Handler())
 }
 

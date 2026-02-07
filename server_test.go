@@ -17,8 +17,14 @@ func newTestServer(t *testing.T) *httptest.Server {
 	return httptest.NewServer(s.Handler())
 }
 
+func newEchoServer(t *testing.T) *httptest.Server {
+	t.Helper()
+	s := llmock.New(llmock.WithResponder(llmock.EchoResponder{}))
+	return httptest.NewServer(s.Handler())
+}
+
 func TestChatCompletions_EchoesLastUserMessage(t *testing.T) {
-	ts := newTestServer(t)
+	ts := newEchoServer(t)
 	defer ts.Close()
 
 	body := `{
@@ -72,6 +78,38 @@ func TestChatCompletions_EchoesLastUserMessage(t *testing.T) {
 	}
 	if choice.Index != 0 {
 		t.Errorf("expected index 0, got %d", choice.Index)
+	}
+}
+
+func TestChatCompletions_DefaultRulesGreeting(t *testing.T) {
+	ts := newTestServer(t)
+	defer ts.Close()
+
+	body := `{
+		"model": "test-model",
+		"messages": [
+			{"role": "user", "content": "hello"}
+		]
+	}`
+
+	resp, err := http.Post(ts.URL+"/v1/chat/completions", "application/json", strings.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	var result llmock.ChatCompletionResponse
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		t.Fatal(err)
+	}
+
+	content := result.Choices[0].Message.Content
+	// Default rules should produce a greeting response, not just echo "hello"
+	if content == "hello" {
+		t.Errorf("expected rule-based response, got echo %q", content)
+	}
+	if content == "" {
+		t.Error("expected non-empty response")
 	}
 }
 
@@ -192,7 +230,7 @@ func TestChatCompletions_DefaultModel(t *testing.T) {
 }
 
 func TestChatCompletions_NoUserMessage_FallsBackToLastMessage(t *testing.T) {
-	ts := newTestServer(t)
+	ts := newEchoServer(t)
 	defer ts.Close()
 
 	body := `{
@@ -219,7 +257,7 @@ func TestChatCompletions_NoUserMessage_FallsBackToLastMessage(t *testing.T) {
 }
 
 func TestMessages_EchoesLastUserMessage(t *testing.T) {
-	ts := newTestServer(t)
+	ts := newEchoServer(t)
 	defer ts.Close()
 
 	body := `{
@@ -337,7 +375,7 @@ func TestMessages_InvalidJSON(t *testing.T) {
 }
 
 func TestBothEndpoints_SameContent(t *testing.T) {
-	ts := newTestServer(t)
+	ts := newEchoServer(t)
 	defer ts.Close()
 
 	// Send the same logical message to both endpoints.

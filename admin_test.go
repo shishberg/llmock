@@ -399,24 +399,18 @@ func TestAdmin_DefaultServerHasAdminEndpoints(t *testing.T) {
 		t.Errorf("expected 200 for admin endpoint on default server, got %d", resp.StatusCode)
 	}
 
-	// The echo behavior should still work.
+	// Default rules should produce a non-empty response.
 	result := chatRequest(t, ts, "Hello, world!")
-	if result.Choices[0].Message.Content != "Hello, world!" {
-		t.Errorf("expected echo behavior with admin enabled, got %q", result.Choices[0].Message.Content)
+	if result.Choices[0].Message.Content == "" {
+		t.Error("expected non-empty response from default server")
 	}
 }
 
-func TestAdmin_InjectRuleOnEchoServer(t *testing.T) {
-	// Default server with no rules (EchoResponder) should allow rule injection.
+func TestAdmin_InjectRuleOnDefaultServer(t *testing.T) {
+	// Default server should allow rule injection.
 	s := llmock.New()
 	ts := httptest.NewServer(s.Handler())
 	defer ts.Close()
-
-	// Initially echoes.
-	result := chatRequest(t, ts, "test message")
-	if result.Choices[0].Message.Content != "test message" {
-		t.Fatalf("expected echo, got %q", result.Choices[0].Message.Content)
-	}
 
 	// Inject a rule.
 	body := `{"rules":[{"pattern":".*error.*","responses":["Something went wrong"]}]}`
@@ -427,15 +421,15 @@ func TestAdmin_InjectRuleOnEchoServer(t *testing.T) {
 	resp.Body.Close()
 
 	// Now it should match the injected rule.
-	result = chatRequest(t, ts, "trigger error please")
+	result := chatRequest(t, ts, "trigger error please")
 	if result.Choices[0].Message.Content != "Something went wrong" {
 		t.Errorf("expected 'Something went wrong', got %q", result.Choices[0].Message.Content)
 	}
 
-	// Non-matching input should still echo (fallback to EchoResponder).
+	// Non-matching input should fall back to default rules (not echo).
 	result = chatRequest(t, ts, "normal message")
-	if result.Choices[0].Message.Content != "normal message" {
-		t.Errorf("expected echo for non-matching input, got %q", result.Choices[0].Message.Content)
+	if result.Choices[0].Message.Content == "" {
+		t.Error("expected non-empty response for non-matching input")
 	}
 }
 

@@ -84,7 +84,7 @@ func New(opts ...Option) *Server {
 	}
 
 	if s.responder == nil {
-		s.responder = EchoResponder{}
+		s.responder = NewRuleResponder(nil)
 	}
 
 	// If the responder is a RuleResponder, set its markov fallback.

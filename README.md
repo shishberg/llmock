@@ -31,7 +31,7 @@ go build -o llmock ./cmd/llmock
 
 ## Quick start
 
-Start the server with defaults (port 9090, echo responder):
+Start the server with zero configuration (port 9090, built-in response rules with Markov fallback):
 
 ```bash
 ./llmock
@@ -48,7 +48,7 @@ curl http://localhost:9090/v1/chat/completions \
   }'
 ```
 
-Response:
+Response (default rules match greetings and common patterns):
 
 ```json
 {
@@ -57,10 +57,10 @@ Response:
   "model": "gpt-4",
   "choices": [{
     "index": 0,
-    "message": {"role": "assistant", "content": "Hello, world!"},
+    "message": {"role": "assistant", "content": "Hello! How can I help you today?"},
     "finish_reason": "stop"
   }],
-  "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+  "usage": {"prompt_tokens": 10, "completion_tokens": 10, "total_tokens": 20}
 }
 ```
 

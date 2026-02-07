@@ -252,3 +252,15 @@ Added support for multi-turn tool use conversations in both OpenAI and Anthropic
 - **Token estimation** updated to use `MessageContent()` for both APIs
 - 10 new tests: OpenAI multi-turn with tool results, OpenAI tool result rule matching, OpenAI null content handling, Anthropic tool_use/tool_result conversation, Anthropic nested content blocks in tool_result, Anthropic mixed text + tool_result blocks, OpenAI multiple parallel tool calls, OpenAI streaming with tool results, Anthropic streaming with tool results, Anthropic tool_result with is_error flag
 - All 154 tests pass, build clean, vet clean, no race conditions
+
+## llmock-xva: Make it work out of the box
+
+Changed the default zero-config behavior so that `llmock.New()` and `go run ./cmd/llmock` produce useful AI-assistant-like responses without any configuration:
+
+- Default responder changed from `EchoResponder` to `RuleResponder` with built-in default rules
+- `NewRuleResponder(nil)` is now used when no responder is explicitly configured, which triggers 8 built-in regex patterns (greetings, "how do I X", "what is X", "help me X", "can you X", thanks, farewell, catch-all) with Markov chain fallback
+- Previously, zero-config mode simply echoed back the user's input verbatim — now it produces varied, context-aware responses like a real LLM mock should
+- `EchoResponder` remains available via `WithResponder(llmock.EchoResponder{})` for tests that need deterministic echo behavior
+- Updated 11 tests across server_test.go, stream_test.go, admin_test.go, fault_test.go, and multiturn_test.go to use explicit `EchoResponder` where exact echo matching was needed
+- Added `TestChatCompletions_DefaultRulesGreeting` to verify the new default behavior produces rule-based (not echo) responses
+- All 155 tests pass, build clean, vet clean

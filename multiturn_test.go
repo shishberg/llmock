@@ -126,7 +126,7 @@ func TestMultiTurn_OpenAI_ToolResultMatchesRule(t *testing.T) {
 // TestMultiTurn_OpenAI_AssistantNullContent verifies that assistant messages
 // with null content (typical when tool_calls are present) are handled correctly.
 func TestMultiTurn_OpenAI_AssistantNullContent(t *testing.T) {
-	s := llmock.New()
+	s := llmock.New(llmock.WithResponder(llmock.EchoResponder{}))
 	ts := httptest.NewServer(s.Handler())
 	defer ts.Close()
 
@@ -236,7 +236,7 @@ func TestMultiTurn_Anthropic_ToolUseAndResult(t *testing.T) {
 // TestMultiTurn_Anthropic_ToolResultWithNestedBlocks verifies that tool_result
 // content can contain nested content blocks (array format).
 func TestMultiTurn_Anthropic_ToolResultWithNestedBlocks(t *testing.T) {
-	s := llmock.New()
+	s := llmock.New(llmock.WithResponder(llmock.EchoResponder{}))
 	ts := httptest.NewServer(s.Handler())
 	defer ts.Close()
 
@@ -354,7 +354,7 @@ func TestMultiTurn_Anthropic_MixedContentBlocks(t *testing.T) {
 // TestMultiTurn_OpenAI_MultipleToolCalls verifies that multiple tool calls
 // and their results in a single conversation are handled correctly.
 func TestMultiTurn_OpenAI_MultipleToolCalls(t *testing.T) {
-	s := llmock.New()
+	s := llmock.New(llmock.WithResponder(llmock.EchoResponder{}))
 	ts := httptest.NewServer(s.Handler())
 	defer ts.Close()
 
@@ -404,7 +404,7 @@ func TestMultiTurn_OpenAI_MultipleToolCalls(t *testing.T) {
 // TestMultiTurn_OpenAI_Streaming verifies that multi-turn conversations
 // with tool results work correctly with streaming enabled.
 func TestMultiTurn_OpenAI_Streaming(t *testing.T) {
-	s := llmock.New()
+	s := llmock.New(llmock.WithResponder(llmock.EchoResponder{}))
 	ts := httptest.NewServer(s.Handler())
 	defer ts.Close()
 
@@ -442,7 +442,7 @@ func TestMultiTurn_OpenAI_Streaming(t *testing.T) {
 // TestMultiTurn_Anthropic_Streaming verifies that Anthropic multi-turn
 // conversations with tool use work correctly with streaming.
 func TestMultiTurn_Anthropic_Streaming(t *testing.T) {
-	s := llmock.New()
+	s := llmock.New(llmock.WithResponder(llmock.EchoResponder{}))
 	ts := httptest.NewServer(s.Handler())
 	defer ts.Close()
 
@@ -488,7 +488,7 @@ func TestMultiTurn_Anthropic_Streaming(t *testing.T) {
 // TestMultiTurn_Anthropic_ToolResultErrorFlag verifies that tool_result
 // messages with is_error=true are still accepted.
 func TestMultiTurn_Anthropic_ToolResultErrorFlag(t *testing.T) {
-	s := llmock.New()
+	s := llmock.New(llmock.WithResponder(llmock.EchoResponder{}))
 	ts := httptest.NewServer(s.Handler())
 	defer ts.Close()
 
