@@ -10,3 +10,15 @@ Implemented the foundation of the mock LLM API server:
 - `cmd/llmock/main.go` starts server on configurable port (flag, env var, default 9090)
 - 8 tests using httptest covering: echo response, usage stats, error cases, default model, fallback behavior
 - All tests pass, build clean, vet clean
+
+## llmock-bw3: Anthropic Messages API format
+
+Added support for the Anthropic `/v1/messages` endpoint alongside the existing OpenAI endpoint:
+
+- Introduced `Responder` interface (`Respond([]InternalMessage) (string, error)`) as the common generation abstraction
+- Both API handlers convert their format-specific messages to `InternalMessage` and delegate to the same `Responder`
+- `EchoResponder` implements the interface (extracted from inline logic in the OpenAI handler)
+- `POST /v1/messages` accepts Anthropic Messages API requests (model, messages, max_tokens)
+- Returns valid Anthropic response: `id` with `msg_` prefix + random hex, `type:"message"`, `role:"assistant"`, content array with `type:"text"` blocks, `stop_reason:"end_turn"`, usage with `input_tokens`/`output_tokens`
+- 5 new tests: echo response with full structure validation, usage stats, empty messages error, invalid JSON error, cross-endpoint content consistency
+- All 13 tests pass, build clean, vet clean
