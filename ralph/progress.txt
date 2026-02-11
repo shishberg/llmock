@@ -330,3 +330,16 @@ Added support for the Google Gemini API format so `genai.Client` can be pointed 
 - Cross-endpoint consistency: same messages produce identical responses on OpenAI, Anthropic, and Gemini endpoints
 - 23 new tests: echo response with structure validation, usage metadata, empty contents error, invalid JSON error, model extraction from path, system instruction handling, default rules response, multi-turn conversation, SSE streaming with content reconstruction, non-stream still works, tool call response, tool call fall-through, auto-tool-calls, function response multi-turn, streaming tool call, error fault format, rate limit fault, admin rule injection, cross-endpoint consistency, request logging, stream empty contents error, stream invalid JSON error, config-loaded rules
 - All 209 tests pass, build clean, vet clean, no race conditions
+
+## llmock-809: Respond with text after tool results instead of re-matching rules
+
+Fixed a bug where llmock re-matched tool-call rules on follow-up requests containing tool results, causing infinite tool-call loops in agentic workflows:
+
+- When a request contains tool result messages, llmock now suppresses tool call responses and returns text instead
+- Detection is API-format-specific: OpenAI checks for role "tool" messages, Anthropic checks for "tool_result" content blocks, Gemini checks for `functionResponse` parts
+- Auto-tool-call generation is also suppressed when tool results are present
+- Text fallback uses the Markov responder for natural-sounding responses when the matched rule only has a `tool_call` config (no text `Responses` templates)
+- Applied consistently across all three API endpoints (OpenAI, Anthropic, Gemini) for both streaming and non-streaming modes
+- Helper functions: `openAIHasToolResults`, `anthropicHasToolResults`, `geminiHasToolResults` detect tool results in each format; `forceTextResponse` converts tool-call responses to text
+- 6 new tests: OpenAI tool-result suppresses tool call (full two-request scenario), Anthropic suppression, Gemini suppression, auto-tool-calls suppressed by tool results, streaming suppression, no-tool-results still returns tool calls (regression guard)
+- All 215 tests pass, build clean, vet clean, no race conditions

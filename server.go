@@ -299,12 +299,21 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// If the conversation contains tool results, suppress tool call responses
+	// to avoid infinite tool-call loops.
+	hasToolResults := openAIHasToolResults(req.Messages)
+
 	// Auto-generate a tool call if enabled and no rule produced one.
-	if s.autoToolCalls && !response.IsToolCall() && len(req.Tools) > 0 {
+	if !hasToolResults && s.autoToolCalls && !response.IsToolCall() && len(req.Tools) > 0 {
 		reqTools := openAIToRequestTools(req.Tools)
 		if tc, ok := generateToolCallFromSchema(reqTools, s.rng); ok {
 			response = Response{ToolCalls: []ToolCall{tc}}
 		}
+	}
+
+	// Force text response when tool results are present.
+	if hasToolResults && response.IsToolCall() {
+		response = s.forceTextResponse(response, internal)
 	}
 
 	s.logAdminRequest(r, internal, response.Text)
@@ -578,12 +587,21 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// If the conversation contains tool results, suppress tool call responses
+	// to avoid infinite tool-call loops.
+	hasToolResults := anthropicHasToolResults(req.Messages)
+
 	// Auto-generate a tool call if enabled and no rule produced one.
-	if s.autoToolCalls && !response.IsToolCall() && len(req.Tools) > 0 {
+	if !hasToolResults && s.autoToolCalls && !response.IsToolCall() && len(req.Tools) > 0 {
 		reqTools := anthropicToRequestTools(req.Tools)
 		if tc, ok := generateToolCallFromSchema(reqTools, s.rng); ok {
 			response = Response{ToolCalls: []ToolCall{tc}}
 		}
+	}
+
+	// Force text response when tool results are present.
+	if hasToolResults && response.IsToolCall() {
+		response = s.forceTextResponse(response, internal)
 	}
 
 	s.logAdminRequest(r, internal, response.Text)
@@ -767,6 +785,42 @@ func anthropicToRequestTools(tools []AnthropicToolDef) []RequestTool {
 		})
 	}
 	return out
+}
+
+// openAIHasToolResults returns true if any message has role "tool".
+func openAIHasToolResults(messages []Message) bool {
+	for _, m := range messages {
+		if m.Role == "tool" {
+			return true
+		}
+	}
+	return false
+}
+
+// anthropicHasToolResults returns true if any message contains a tool_result content block.
+func anthropicHasToolResults(messages []AnthropicMessage) bool {
+	for _, m := range messages {
+		var blocks []AnthropicInputBlock
+		if err := json.Unmarshal(m.Content, &blocks); err == nil {
+			for _, b := range blocks {
+				if b.Type == "tool_result" {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+// forceTextResponse converts a tool-call response to a text response.
+// Used when the request contains tool results to avoid infinite tool-call loops.
+func (s *Server) forceTextResponse(resp Response, messages []InternalMessage) Response {
+	if s.markov != nil {
+		if r, err := s.markov.Respond(messages); err == nil {
+			return r
+		}
+	}
+	return Response{Text: "I've processed the tool results. Is there anything else I can help with?"}
 }
 
 func writeError(w http.ResponseWriter, code int, msg string) {

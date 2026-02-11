@@ -1,6 +1,7 @@
 package llmock_test
 
 import (
+	"bufio"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -535,5 +536,331 @@ func TestMultiTurn_Anthropic_ToolResultErrorFlag(t *testing.T) {
 	// Should echo the last user message.
 	if result.Content[0].Text != "The tool failed, try something else" {
 		t.Errorf("expected 'The tool failed, try something else', got %q", result.Content[0].Text)
+	}
+}
+
+// TestMultiTurn_OpenAI_ToolResultSuppressesToolCall verifies that when a
+// request contains tool results and a rule matches with a tool_call, the
+// server responds with text instead of another tool call (preventing loops).
+func TestMultiTurn_OpenAI_ToolResultSuppressesToolCall(t *testing.T) {
+	rules := []llmock.Rule{
+		{
+			Pattern: regexp.MustCompile(`(?i).*weather.*`),
+			ToolCall: &llmock.ToolCallConfig{
+				Name:      "get_weather",
+				Arguments: map[string]any{"location": "Paris"},
+			},
+		},
+		{Pattern: regexp.MustCompile(`.*`), Responses: []string{"fallback"}},
+	}
+	s := llmock.New(llmock.WithRules(rules...), llmock.WithSeed(42))
+	ts := httptest.NewServer(s.Handler())
+	defer ts.Close()
+
+	// First request: should return a tool call.
+	body1 := `{
+		"model": "gpt-4",
+		"messages": [{"role": "user", "content": "What's the weather?"}],
+		"tools": [{"type": "function", "function": {"name": "get_weather"}}]
+	}`
+	resp1, err := http.Post(ts.URL+"/v1/chat/completions", "application/json", strings.NewReader(body1))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp1.Body.Close()
+
+	var result1 llmock.ChatCompletionResponse
+	json.NewDecoder(resp1.Body).Decode(&result1)
+	if result1.Choices[0].FinishReason != "tool_calls" {
+		t.Fatalf("first request: expected finish_reason 'tool_calls', got %q", result1.Choices[0].FinishReason)
+	}
+
+	// Second request: includes tool result. Should NOT return another tool call.
+	body2 := `{
+		"model": "gpt-4",
+		"messages": [
+			{"role": "user", "content": "What's the weather?"},
+			{"role": "assistant", "content": null, "tool_calls": [
+				{"id": "call_1", "type": "function", "function": {"name": "get_weather", "arguments": "{\"location\":\"Paris\"}"}}
+			]},
+			{"role": "tool", "tool_call_id": "call_1", "content": "72°F and sunny in Paris"}
+		],
+		"tools": [{"type": "function", "function": {"name": "get_weather"}}]
+	}`
+	resp2, err := http.Post(ts.URL+"/v1/chat/completions", "application/json", strings.NewReader(body2))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp2.Body.Close()
+
+	var result2 llmock.ChatCompletionResponse
+	json.NewDecoder(resp2.Body).Decode(&result2)
+
+	// Should be a text response, not a tool call.
+	if result2.Choices[0].FinishReason != "stop" {
+		t.Errorf("second request: expected finish_reason 'stop', got %q", result2.Choices[0].FinishReason)
+	}
+	if result2.Choices[0].Message.Content == "" {
+		t.Error("second request: expected non-empty text content")
+	}
+	if len(result2.Choices[0].Message.ToolCalls) > 0 {
+		t.Error("second request: expected no tool calls in response")
+	}
+}
+
+// TestMultiTurn_Anthropic_ToolResultSuppressesToolCall verifies the same
+// tool-result suppression for the Anthropic endpoint.
+func TestMultiTurn_Anthropic_ToolResultSuppressesToolCall(t *testing.T) {
+	rules := []llmock.Rule{
+		{
+			Pattern: regexp.MustCompile(`(?i).*search.*`),
+			ToolCall: &llmock.ToolCallConfig{
+				Name:      "search_kb",
+				Arguments: map[string]any{"query": "${input}"},
+			},
+		},
+	}
+	s := llmock.New(llmock.WithRules(rules...), llmock.WithSeed(42))
+	ts := httptest.NewServer(s.Handler())
+	defer ts.Close()
+
+	// Request with tool results should get text, not another tool call.
+	body := `{
+		"model": "claude-3-opus",
+		"max_tokens": 1024,
+		"messages": [
+			{"role": "user", "content": "search for llmock docs"},
+			{"role": "assistant", "content": [
+				{"type": "tool_use", "id": "toolu_1", "name": "search_kb", "input": {"query": "llmock docs"}}
+			]},
+			{"role": "user", "content": [
+				{"type": "tool_result", "tool_use_id": "toolu_1", "content": "Found: llmock documentation page."}
+			]}
+		],
+		"tools": [{"name": "search_kb", "input_schema": {"type": "object"}}]
+	}`
+
+	resp, err := http.Post(ts.URL+"/v1/messages", "application/json", strings.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	var result llmock.AnthropicResponse
+	json.NewDecoder(resp.Body).Decode(&result)
+
+	if result.StopReason != "end_turn" {
+		t.Errorf("expected stop_reason 'end_turn', got %q", result.StopReason)
+	}
+	// Should be a text block, not tool_use.
+	if len(result.Content) == 0 {
+		t.Fatal("expected at least one content block")
+	}
+	if result.Content[0].Type != "text" {
+		t.Errorf("expected content type 'text', got %q", result.Content[0].Type)
+	}
+	if result.Content[0].Text == "" {
+		t.Error("expected non-empty text content")
+	}
+}
+
+// TestMultiTurn_Gemini_ToolResultSuppressesToolCall verifies tool-result
+// suppression for the Gemini endpoint.
+func TestMultiTurn_Gemini_ToolResultSuppressesToolCall(t *testing.T) {
+	rules := []llmock.Rule{
+		{
+			Pattern: regexp.MustCompile(`(?i).*weather.*`),
+			ToolCall: &llmock.ToolCallConfig{
+				Name:      "get_weather",
+				Arguments: map[string]any{"city": "Tokyo"},
+			},
+		},
+	}
+	s := llmock.New(llmock.WithRules(rules...), llmock.WithSeed(42))
+	ts := httptest.NewServer(s.Handler())
+	defer ts.Close()
+
+	body := `{
+		"contents": [
+			{"role": "user", "parts": [{"text": "What's the weather?"}]},
+			{"role": "model", "parts": [{"functionCall": {"name": "get_weather", "args": {"city": "Tokyo"}}}]},
+			{"role": "user", "parts": [{"functionResponse": {"name": "get_weather", "response": {"result": "25°C and clear"}}}]}
+		],
+		"tools": [{"functionDeclarations": [{"name": "get_weather"}]}]
+	}`
+
+	resp, err := http.Post(ts.URL+"/v1beta/models/gemini-pro:generateContent", "application/json", strings.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	var result llmock.GeminiResponse
+	json.NewDecoder(resp.Body).Decode(&result)
+
+	if len(result.Candidates) == 0 {
+		t.Fatal("expected at least one candidate")
+	}
+	// Should be text, not a function call.
+	parts := result.Candidates[0].Content.Parts
+	if len(parts) == 0 {
+		t.Fatal("expected at least one part")
+	}
+	if parts[0].FunctionCall != nil {
+		t.Error("expected text response, got function call")
+	}
+	if parts[0].Text == "" {
+		t.Error("expected non-empty text")
+	}
+}
+
+// TestMultiTurn_OpenAI_AutoToolCallsSuppressedByToolResults verifies that
+// auto-tool-call generation is also suppressed when tool results are present.
+func TestMultiTurn_OpenAI_AutoToolCallsSuppressedByToolResults(t *testing.T) {
+	s := llmock.New(llmock.WithAutoToolCalls(true), llmock.WithSeed(42))
+	ts := httptest.NewServer(s.Handler())
+	defer ts.Close()
+
+	body := `{
+		"model": "gpt-4",
+		"messages": [
+			{"role": "user", "content": "Hello"},
+			{"role": "assistant", "content": null, "tool_calls": [
+				{"id": "call_1", "type": "function", "function": {"name": "greet", "arguments": "{}"}}
+			]},
+			{"role": "tool", "tool_call_id": "call_1", "content": "Greeting sent"}
+		],
+		"tools": [{"type": "function", "function": {"name": "greet", "parameters": {"type": "object"}}}]
+	}`
+
+	resp, err := http.Post(ts.URL+"/v1/chat/completions", "application/json", strings.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	var result llmock.ChatCompletionResponse
+	json.NewDecoder(resp.Body).Decode(&result)
+
+	// Even with auto-tool-calls enabled, should return text when tool results present.
+	if result.Choices[0].FinishReason != "stop" {
+		t.Errorf("expected finish_reason 'stop', got %q", result.Choices[0].FinishReason)
+	}
+	if len(result.Choices[0].Message.ToolCalls) > 0 {
+		t.Error("expected no tool calls when tool results are present")
+	}
+}
+
+// TestMultiTurn_OpenAI_StreamingToolResultSuppressesToolCall verifies that
+// streaming responses also suppress tool calls when tool results are present.
+func TestMultiTurn_OpenAI_StreamingToolResultSuppressesToolCall(t *testing.T) {
+	rules := []llmock.Rule{
+		{
+			Pattern: regexp.MustCompile(`(?i).*weather.*`),
+			ToolCall: &llmock.ToolCallConfig{
+				Name:      "get_weather",
+				Arguments: map[string]any{"city": "NYC"},
+			},
+		},
+	}
+	s := llmock.New(llmock.WithRules(rules...), llmock.WithSeed(42))
+	ts := httptest.NewServer(s.Handler())
+	defer ts.Close()
+
+	body := `{
+		"model": "gpt-4",
+		"stream": true,
+		"messages": [
+			{"role": "user", "content": "What's the weather?"},
+			{"role": "assistant", "content": null, "tool_calls": [
+				{"id": "call_1", "type": "function", "function": {"name": "get_weather", "arguments": "{\"city\":\"NYC\"}"}}
+			]},
+			{"role": "tool", "tool_call_id": "call_1", "content": "68°F partly cloudy"}
+		],
+		"tools": [{"type": "function", "function": {"name": "get_weather"}}]
+	}`
+
+	resp, err := http.Post(ts.URL+"/v1/chat/completions", "application/json", strings.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+
+	// Read SSE events — should be text chunks, not tool call chunks.
+	scanner := bufio.NewScanner(resp.Body)
+	var hasContent bool
+	for scanner.Scan() {
+		line := scanner.Text()
+		if !strings.HasPrefix(line, "data: ") || line == "data: [DONE]" {
+			continue
+		}
+		var chunk struct {
+			Choices []struct {
+				Delta struct {
+					Content   string `json:"content"`
+					ToolCalls []any  `json:"tool_calls"`
+				} `json:"delta"`
+				FinishReason *string `json:"finish_reason"`
+			} `json:"choices"`
+		}
+		if err := json.Unmarshal([]byte(line[6:]), &chunk); err != nil {
+			continue
+		}
+		if len(chunk.Choices) > 0 {
+			if chunk.Choices[0].Delta.Content != "" {
+				hasContent = true
+			}
+			if len(chunk.Choices[0].Delta.ToolCalls) > 0 {
+				t.Error("streaming: expected no tool call chunks when tool results are present")
+			}
+		}
+	}
+	if !hasContent {
+		t.Error("streaming: expected text content chunks")
+	}
+}
+
+// TestMultiTurn_NoToolResults_StillReturnsToolCall verifies that requests
+// WITHOUT tool results still correctly return tool calls (the fix doesn't
+// break the normal tool call path).
+func TestMultiTurn_NoToolResults_StillReturnsToolCall(t *testing.T) {
+	rules := []llmock.Rule{
+		{
+			Pattern: regexp.MustCompile(`(?i).*weather.*`),
+			ToolCall: &llmock.ToolCallConfig{
+				Name:      "get_weather",
+				Arguments: map[string]any{"location": "SF"},
+			},
+		},
+	}
+	s := llmock.New(llmock.WithRules(rules...), llmock.WithSeed(42))
+	ts := httptest.NewServer(s.Handler())
+	defer ts.Close()
+
+	body := `{
+		"model": "gpt-4",
+		"messages": [{"role": "user", "content": "What's the weather?"}],
+		"tools": [{"type": "function", "function": {"name": "get_weather"}}]
+	}`
+
+	resp, err := http.Post(ts.URL+"/v1/chat/completions", "application/json", strings.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	var result llmock.ChatCompletionResponse
+	json.NewDecoder(resp.Body).Decode(&result)
+
+	// Without tool results, should still return a tool call.
+	if result.Choices[0].FinishReason != "tool_calls" {
+		t.Errorf("expected finish_reason 'tool_calls', got %q", result.Choices[0].FinishReason)
+	}
+	if len(result.Choices[0].Message.ToolCalls) == 0 {
+		t.Error("expected tool calls in response")
 	}
 }

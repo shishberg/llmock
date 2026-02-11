@@ -205,12 +205,21 @@ func (s *Server) handleGeminiGenerate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// If the conversation contains tool results, suppress tool call responses
+	// to avoid infinite tool-call loops.
+	hasToolResults := geminiHasToolResults(req.Contents)
+
 	// Auto-generate a tool call if enabled and no rule produced one.
-	if s.autoToolCalls && !response.IsToolCall() && len(req.Tools) > 0 {
+	if !hasToolResults && s.autoToolCalls && !response.IsToolCall() && len(req.Tools) > 0 {
 		reqTools := geminiToRequestTools(req.Tools)
 		if tc, ok := generateToolCallFromSchema(reqTools, s.rng); ok {
 			response = Response{ToolCalls: []ToolCall{tc}}
 		}
+	}
+
+	// Force text response when tool results are present.
+	if hasToolResults && response.IsToolCall() {
+		response = s.forceTextResponse(response, internal)
 	}
 
 	s.logAdminRequest(r, internal, response.Text)
@@ -326,12 +335,21 @@ func (s *Server) handleGeminiStream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// If the conversation contains tool results, suppress tool call responses
+	// to avoid infinite tool-call loops.
+	hasToolResults := geminiHasToolResults(req.Contents)
+
 	// Auto-generate a tool call if enabled and no rule produced one.
-	if s.autoToolCalls && !response.IsToolCall() && len(req.Tools) > 0 {
+	if !hasToolResults && s.autoToolCalls && !response.IsToolCall() && len(req.Tools) > 0 {
 		reqTools := geminiToRequestTools(req.Tools)
 		if tc, ok := generateToolCallFromSchema(reqTools, s.rng); ok {
 			response = Response{ToolCalls: []ToolCall{tc}}
 		}
+	}
+
+	// Force text response when tool results are present.
+	if hasToolResults && response.IsToolCall() {
+		response = s.forceTextResponse(response, internal)
 	}
 
 	s.logAdminRequest(r, internal, response.Text)
@@ -455,6 +473,18 @@ func extractGeminiModel(path string) string {
 		return path[len(prefix):]
 	}
 	return ""
+}
+
+// geminiHasToolResults returns true if any content contains a functionResponse part.
+func geminiHasToolResults(contents []GeminiContent) bool {
+	for _, c := range contents {
+		for _, p := range c.Parts {
+			if p.FunctionResponse != nil {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func writeGeminiError(w http.ResponseWriter, code int, msg string) {
