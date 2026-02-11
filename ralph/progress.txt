@@ -343,3 +343,17 @@ Fixed a bug where llmock re-matched tool-call rules on follow-up requests contai
 - Helper functions: `openAIHasToolResults`, `anthropicHasToolResults`, `geminiHasToolResults` detect tool results in each format; `forceTextResponse` converts tool-call responses to text
 - 6 new tests: OpenAI tool-result suppresses tool call (full two-request scenario), Anthropic suppression, Gemini suppression, auto-tool-calls suppressed by tool results, streaming suppression, no-tool-results still returns tool calls (regression guard)
 - All 215 tests pass, build clean, vet clean, no race conditions
+
+## llmock-5uo: Support one-shot or max_calls for tool call rules
+
+Added `MaxCalls` field to rules that limits how many times a tool call fires, enabling workflows like "call search_kb once, then respond with a canned summary":
+
+- New `MaxCalls *int` field on `Rule` struct — when set, the rule's tool call fires only that many times; subsequent matches fall through to text `Responses` templates instead
+- If `MaxCalls` is exhausted and the rule has no text `Responses`, the rule is skipped entirely and the next matching rule is tried
+- `nil` MaxCalls (the default) means unlimited — fully backwards compatible
+- Call counting implemented in both `RuleResponder` (for programmatic use) and `adminState` (for admin-injected rules) with thread-safe counters
+- Counters reset on admin API `POST /_mock/reset`, `DELETE /_mock/rules`, and `POST /_mock/rules` (since rule indices change)
+- Config file support: `max_calls` field in YAML/JSON rule config, parsed by both `ParseConfig` and `ParseRulesYAML`, passed through `CompileRules`
+- Admin API `GET /_mock/rules` now includes `max_calls` in the JSON response when set
+- 7 new tests: basic max_calls=1 fall-to-text, no-text-responses skips to next rule, unlimited by default (regression guard), max_calls=2 fires twice then text, Anthropic endpoint integration, config file parsing, admin reset restores counter
+- All 222 tests pass, build clean, vet clean, no race conditions

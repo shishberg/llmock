@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 
 	"gopkg.in/yaml.v3"
 )
@@ -15,18 +16,25 @@ import (
 // Templates may use $1, $2, etc. for capture groups and ${input} for the
 // full original user message. A rule may also specify a ToolCall instead
 // of (or in addition to) text responses.
+//
+// MaxCalls limits how many times this rule's tool call fires. After that
+// many invocations, the rule falls through to its text Responses instead
+// (or is skipped if it has no text responses). Nil means unlimited.
 type Rule struct {
 	Pattern   *regexp.Regexp
 	Responses []string
 	ToolCall  *ToolCallConfig
+	MaxCalls  *int
 }
 
 // RuleResponder matches messages against an ordered list of rules.
 // The first matching rule wins. If no rule matches, the Markov fallback
 // responder is used.
 type RuleResponder struct {
-	rules  []Rule
-	markov *MarkovResponder
+	rules      []Rule
+	markov     *MarkovResponder
+	mu         sync.Mutex
+	callCounts map[int]int // rule index → number of tool call invocations
 }
 
 // NewRuleResponder creates a RuleResponder from the given rules.
@@ -35,7 +43,7 @@ func NewRuleResponder(rules []Rule) *RuleResponder {
 	if len(rules) == 0 {
 		rules = DefaultRules()
 	}
-	return &RuleResponder{rules: rules}
+	return &RuleResponder{rules: rules, callCounts: make(map[int]int)}
 }
 
 // Respond finds the first rule matching the last user message and expands
@@ -46,13 +54,28 @@ func (r *RuleResponder) Respond(messages []InternalMessage) (Response, error) {
 		return Response{}, errNoMessages
 	}
 
-	for _, rule := range r.rules {
+	for i, rule := range r.rules {
 		matches := rule.Pattern.FindStringSubmatch(input)
 		if matches == nil {
 			continue
 		}
 		// If this rule specifies a tool call, return a tool call response.
 		if rule.ToolCall != nil {
+			if rule.MaxCalls != nil {
+				r.mu.Lock()
+				count := r.callCounts[i]
+				if count >= *rule.MaxCalls {
+					r.mu.Unlock()
+					// Exhausted: fall through to text responses if available.
+					if len(rule.Responses) > 0 {
+						template := rule.Responses[rand.IntN(len(rule.Responses))]
+						return Response{Text: expandTemplate(template, matches, input, r.markov)}, nil
+					}
+					continue
+				}
+				r.callCounts[i]++
+				r.mu.Unlock()
+			}
 			tc := resolveToolCall(*rule.ToolCall, matches, input)
 			return Response{ToolCalls: []ToolCall{tc}}, nil
 		}
@@ -150,6 +173,7 @@ type ruleConfig struct {
 	Pattern   string          `yaml:"pattern"`
 	Responses []string        `yaml:"responses"`
 	ToolCall  *ToolCallConfig `yaml:"tool_call,omitempty"`
+	MaxCalls  *int            `yaml:"max_calls,omitempty"`
 }
 
 // rulesFileConfig is the top-level YAML structure.
@@ -181,7 +205,7 @@ func ParseRulesYAML(data []byte) ([]Rule, error) {
 		if len(rc.Responses) == 0 && rc.ToolCall == nil {
 			return nil, fmt.Errorf("rule %d pattern %q has no responses or tool_call", i, rc.Pattern)
 		}
-		rules[i] = Rule{Pattern: re, Responses: rc.Responses, ToolCall: rc.ToolCall}
+		rules[i] = Rule{Pattern: re, Responses: rc.Responses, ToolCall: rc.ToolCall, MaxCalls: rc.MaxCalls}
 	}
 	return rules, nil
 }

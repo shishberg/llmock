@@ -27,6 +27,7 @@ type adminState struct {
 	initialRules []Rule
 	requestLog   []requestEntry
 	markov       *MarkovResponder
+	callCounts   map[int]int // rule index → number of tool call invocations
 }
 
 func newAdminState(initial []Rule, markov *MarkovResponder) *adminState {
@@ -36,6 +37,7 @@ func newAdminState(initial []Rule, markov *MarkovResponder) *adminState {
 		rules:        cp,
 		initialRules: initial,
 		markov:       markov,
+		callCounts:   make(map[int]int),
 	}
 }
 
@@ -51,10 +53,10 @@ func (a *adminState) snapshot() []Rule {
 // matchRules tries each rule in order; returns the response and pattern on
 // match, or empty response and string if nothing matched.
 func (a *adminState) matchRules(input string) (Response, string) {
-	a.mu.RLock()
-	defer a.mu.RUnlock()
+	a.mu.Lock()
+	defer a.mu.Unlock()
 
-	for _, rule := range a.rules {
+	for i, rule := range a.rules {
 		matches := rule.Pattern.FindStringSubmatch(input)
 		if matches == nil {
 			continue
@@ -62,6 +64,19 @@ func (a *adminState) matchRules(input string) (Response, string) {
 		matchedPattern := rule.Pattern.String()
 		// If this rule specifies a tool call, return a tool call response.
 		if rule.ToolCall != nil {
+			if rule.MaxCalls != nil {
+				count := a.callCounts[i]
+				if count >= *rule.MaxCalls {
+					// Exhausted: fall through to text responses if available.
+					if len(rule.Responses) > 0 {
+						template := rule.Responses[rand.IntN(len(rule.Responses))]
+						text := expandTemplate(template, matches, input, a.markov)
+						return Response{Text: text}, matchedPattern
+					}
+					continue
+				}
+				a.callCounts[i]++
+			}
 			tc := resolveToolCall(*rule.ToolCall, matches, input)
 			return Response{ToolCalls: []ToolCall{tc}}, matchedPattern
 		}
@@ -89,6 +104,7 @@ func (a *adminState) resetRules() {
 	cp := make([]Rule, len(a.initialRules))
 	copy(cp, a.initialRules)
 	a.rules = cp
+	a.callCounts = make(map[int]int)
 }
 
 // fullReset restores rules and clears the request log.
@@ -99,6 +115,7 @@ func (a *adminState) fullReset() {
 	copy(cp, a.initialRules)
 	a.rules = cp
 	a.requestLog = nil
+	a.callCounts = make(map[int]int)
 }
 
 // addRules inserts rules at the given priority position.
@@ -106,6 +123,8 @@ func (a *adminState) fullReset() {
 func (a *adminState) addRules(rules []Rule, priority int) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	// Reset call counts since rule indices will change.
+	a.callCounts = make(map[int]int)
 	switch {
 	case priority == 0:
 		a.rules = append(rules, a.rules...)
@@ -152,6 +171,7 @@ func (a *adminState) getRulesJSON() []ruleJSON {
 		out[i] = ruleJSON{
 			Pattern:   r.Pattern.String(),
 			Responses: r.Responses,
+			MaxCalls:  r.MaxCalls,
 		}
 	}
 	return out
@@ -161,6 +181,7 @@ func (a *adminState) getRulesJSON() []ruleJSON {
 type ruleJSON struct {
 	Pattern   string   `json:"pattern"`
 	Responses []string `json:"responses"`
+	MaxCalls  *int     `json:"max_calls,omitempty"`
 }
 
 // addRulesRequest is the JSON body for POST /_mock/rules.

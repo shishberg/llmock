@@ -566,3 +566,320 @@ func TestToolCall_InputTemplateInArguments(t *testing.T) {
 		t.Errorf("expected message 'test input here', got %v", args["message"])
 	}
 }
+
+func intPtr(n int) *int { return &n }
+
+func TestToolCall_MaxCalls_FallsToTextAfterLimit(t *testing.T) {
+	// Rule fires tool call once, then falls through to text response.
+	rules := []llmock.Rule{
+		{
+			Pattern:   regexp.MustCompile(`.*search.*`),
+			ToolCall:  &llmock.ToolCallConfig{Name: "search_kb", Arguments: map[string]any{"query": "${input}"}},
+			Responses: []string{"Here is a summary of the search results."},
+			MaxCalls:  intPtr(1),
+		},
+	}
+	ts := newToolCallServer(t, rules...)
+	defer ts.Close()
+
+	body := `{
+		"model": "gpt-4",
+		"messages": [{"role": "user", "content": "search for cats"}],
+		"tools": [{"type": "function", "function": {"name": "search_kb", "parameters": {}}}]
+	}`
+
+	// First request: should return a tool call.
+	resp, err := http.Post(ts.URL+"/v1/chat/completions", "application/json", strings.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	var result llmock.ChatCompletionResponse
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		t.Fatal(err)
+	}
+	if result.Choices[0].FinishReason != "tool_calls" {
+		t.Fatalf("first request: expected finish_reason 'tool_calls', got %q", result.Choices[0].FinishReason)
+	}
+
+	// Second request: should fall through to text response.
+	resp2, err := http.Post(ts.URL+"/v1/chat/completions", "application/json", strings.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp2.Body.Close()
+
+	var result2 llmock.ChatCompletionResponse
+	if err := json.NewDecoder(resp2.Body).Decode(&result2); err != nil {
+		t.Fatal(err)
+	}
+	if result2.Choices[0].FinishReason != "stop" {
+		t.Fatalf("second request: expected finish_reason 'stop', got %q", result2.Choices[0].FinishReason)
+	}
+	if result2.Choices[0].Message.Content != "Here is a summary of the search results." {
+		t.Errorf("expected text fallback, got %q", result2.Choices[0].Message.Content)
+	}
+}
+
+func TestToolCall_MaxCalls_NoTextResponses_SkipsRule(t *testing.T) {
+	// Rule with max_calls but no text responses: after exhaustion, rule is skipped
+	// and the next rule is tried.
+	rules := []llmock.Rule{
+		{
+			Pattern:  regexp.MustCompile(`.*search.*`),
+			ToolCall: &llmock.ToolCallConfig{Name: "search_kb", Arguments: map[string]any{"q": "test"}},
+			MaxCalls: intPtr(1),
+		},
+		{Pattern: regexp.MustCompile(`.*`), Responses: []string{"catchall response"}},
+	}
+	ts := newToolCallServer(t, rules...)
+	defer ts.Close()
+
+	body := `{
+		"model": "gpt-4",
+		"messages": [{"role": "user", "content": "search for dogs"}],
+		"tools": [{"type": "function", "function": {"name": "search_kb", "parameters": {}}}]
+	}`
+
+	// First request: tool call fires.
+	resp, err := http.Post(ts.URL+"/v1/chat/completions", "application/json", strings.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+
+	// Second request: tool call exhausted, no text responses, falls to catchall.
+	resp2, err := http.Post(ts.URL+"/v1/chat/completions", "application/json", strings.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp2.Body.Close()
+
+	var result2 llmock.ChatCompletionResponse
+	if err := json.NewDecoder(resp2.Body).Decode(&result2); err != nil {
+		t.Fatal(err)
+	}
+	if result2.Choices[0].FinishReason != "stop" {
+		t.Fatalf("expected finish_reason 'stop', got %q", result2.Choices[0].FinishReason)
+	}
+	if result2.Choices[0].Message.Content != "catchall response" {
+		t.Errorf("expected 'catchall response', got %q", result2.Choices[0].Message.Content)
+	}
+}
+
+func TestToolCall_MaxCalls_Unlimited_ByDefault(t *testing.T) {
+	// No MaxCalls set: tool call fires every time.
+	rules := []llmock.Rule{
+		{
+			Pattern:  regexp.MustCompile(`.*weather.*`),
+			ToolCall: &llmock.ToolCallConfig{Name: "get_weather", Arguments: map[string]any{"loc": "NYC"}},
+		},
+	}
+	ts := newToolCallServer(t, rules...)
+	defer ts.Close()
+
+	body := `{
+		"model": "gpt-4",
+		"messages": [{"role": "user", "content": "weather please"}],
+		"tools": [{"type": "function", "function": {"name": "get_weather", "parameters": {}}}]
+	}`
+
+	for i := 0; i < 3; i++ {
+		resp, err := http.Post(ts.URL+"/v1/chat/completions", "application/json", strings.NewReader(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var result llmock.ChatCompletionResponse
+		json.NewDecoder(resp.Body).Decode(&result)
+		resp.Body.Close()
+		if result.Choices[0].FinishReason != "tool_calls" {
+			t.Fatalf("request %d: expected 'tool_calls', got %q", i+1, result.Choices[0].FinishReason)
+		}
+	}
+}
+
+func TestToolCall_MaxCalls_GreaterThanOne(t *testing.T) {
+	// max_calls=2: tool call fires twice, then falls to text.
+	rules := []llmock.Rule{
+		{
+			Pattern:   regexp.MustCompile(`.*fetch.*`),
+			ToolCall:  &llmock.ToolCallConfig{Name: "fetch_data", Arguments: map[string]any{}},
+			Responses: []string{"Done fetching."},
+			MaxCalls:  intPtr(2),
+		},
+	}
+	ts := newToolCallServer(t, rules...)
+	defer ts.Close()
+
+	body := `{
+		"model": "gpt-4",
+		"messages": [{"role": "user", "content": "fetch results"}],
+		"tools": [{"type": "function", "function": {"name": "fetch_data", "parameters": {}}}]
+	}`
+
+	// Requests 1 and 2: tool call fires.
+	for i := 0; i < 2; i++ {
+		resp, err := http.Post(ts.URL+"/v1/chat/completions", "application/json", strings.NewReader(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var result llmock.ChatCompletionResponse
+		json.NewDecoder(resp.Body).Decode(&result)
+		resp.Body.Close()
+		if result.Choices[0].FinishReason != "tool_calls" {
+			t.Fatalf("request %d: expected 'tool_calls', got %q", i+1, result.Choices[0].FinishReason)
+		}
+	}
+
+	// Request 3: exhausted, text response.
+	resp, err := http.Post(ts.URL+"/v1/chat/completions", "application/json", strings.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	var result llmock.ChatCompletionResponse
+	json.NewDecoder(resp.Body).Decode(&result)
+	if result.Choices[0].FinishReason != "stop" {
+		t.Fatalf("request 3: expected 'stop', got %q", result.Choices[0].FinishReason)
+	}
+	if result.Choices[0].Message.Content != "Done fetching." {
+		t.Errorf("expected 'Done fetching.', got %q", result.Choices[0].Message.Content)
+	}
+}
+
+func TestToolCall_MaxCalls_Anthropic(t *testing.T) {
+	// Verify max_calls works on Anthropic endpoint too.
+	rules := []llmock.Rule{
+		{
+			Pattern:   regexp.MustCompile(`.*search.*`),
+			ToolCall:  &llmock.ToolCallConfig{Name: "search", Arguments: map[string]any{"q": "test"}},
+			Responses: []string{"Search complete."},
+			MaxCalls:  intPtr(1),
+		},
+	}
+	ts := newToolCallServer(t, rules...)
+	defer ts.Close()
+
+	body := `{
+		"model": "claude-3",
+		"max_tokens": 1024,
+		"messages": [{"role": "user", "content": "search for info"}],
+		"tools": [{"name": "search", "input_schema": {"type": "object"}}]
+	}`
+
+	// First request: tool call.
+	resp, err := http.Post(ts.URL+"/v1/messages", "application/json", strings.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var result llmock.AnthropicResponse
+	json.NewDecoder(resp.Body).Decode(&result)
+	resp.Body.Close()
+	if result.StopReason != "tool_use" {
+		t.Fatalf("first request: expected stop_reason 'tool_use', got %q", result.StopReason)
+	}
+
+	// Second request: text fallback.
+	resp2, err := http.Post(ts.URL+"/v1/messages", "application/json", strings.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp2.Body.Close()
+	var result2 llmock.AnthropicResponse
+	json.NewDecoder(resp2.Body).Decode(&result2)
+	if result2.StopReason != "end_turn" {
+		t.Fatalf("second request: expected stop_reason 'end_turn', got %q", result2.StopReason)
+	}
+	if len(result2.Content) == 0 || result2.Content[0].Text != "Search complete." {
+		t.Errorf("expected 'Search complete.', got %+v", result2.Content)
+	}
+}
+
+func TestToolCall_MaxCalls_ConfigParsing(t *testing.T) {
+	yamlData := []byte(`
+rules:
+  - pattern: ".*search.*"
+    tool_call:
+      name: "search_kb"
+      arguments:
+        query: "${input}"
+    responses:
+      - "Here are the results."
+    max_calls: 1
+`)
+
+	cfg, err := llmock.ParseConfig(yamlData, "test.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(cfg.Rules) != 1 {
+		t.Fatalf("expected 1 rule, got %d", len(cfg.Rules))
+	}
+	if cfg.Rules[0].MaxCalls == nil {
+		t.Fatal("expected max_calls to be set")
+	}
+	if *cfg.Rules[0].MaxCalls != 1 {
+		t.Errorf("expected max_calls=1, got %d", *cfg.Rules[0].MaxCalls)
+	}
+
+	rules, err := llmock.CompileRules(cfg.Rules)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rules[0].MaxCalls == nil || *rules[0].MaxCalls != 1 {
+		t.Fatal("expected compiled rule to have max_calls=1")
+	}
+}
+
+func TestToolCall_MaxCalls_ResetRestoresCounter(t *testing.T) {
+	// After admin reset, the counter should be restored and tool call fires again.
+	rules := []llmock.Rule{
+		{
+			Pattern:   regexp.MustCompile(`.*search.*`),
+			ToolCall:  &llmock.ToolCallConfig{Name: "search", Arguments: map[string]any{}},
+			Responses: []string{"text fallback"},
+			MaxCalls:  intPtr(1),
+		},
+	}
+	ts := newToolCallServer(t, rules...)
+	defer ts.Close()
+
+	body := `{
+		"model": "gpt-4",
+		"messages": [{"role": "user", "content": "search now"}],
+		"tools": [{"type": "function", "function": {"name": "search", "parameters": {}}}]
+	}`
+
+	// First request: tool call.
+	resp, _ := http.Post(ts.URL+"/v1/chat/completions", "application/json", strings.NewReader(body))
+	var r1 llmock.ChatCompletionResponse
+	json.NewDecoder(resp.Body).Decode(&r1)
+	resp.Body.Close()
+	if r1.Choices[0].FinishReason != "tool_calls" {
+		t.Fatalf("expected 'tool_calls', got %q", r1.Choices[0].FinishReason)
+	}
+
+	// Second request: text (exhausted).
+	resp2, _ := http.Post(ts.URL+"/v1/chat/completions", "application/json", strings.NewReader(body))
+	var r2 llmock.ChatCompletionResponse
+	json.NewDecoder(resp2.Body).Decode(&r2)
+	resp2.Body.Close()
+	if r2.Choices[0].FinishReason != "stop" {
+		t.Fatalf("expected 'stop', got %q", r2.Choices[0].FinishReason)
+	}
+
+	// Reset via admin API.
+	req, _ := http.NewRequest("POST", ts.URL+"/_mock/reset", nil)
+	http.DefaultClient.Do(req)
+
+	// Third request: tool call fires again after reset.
+	resp3, _ := http.Post(ts.URL+"/v1/chat/completions", "application/json", strings.NewReader(body))
+	var r3 llmock.ChatCompletionResponse
+	json.NewDecoder(resp3.Body).Decode(&r3)
+	resp3.Body.Close()
+	if r3.Choices[0].FinishReason != "tool_calls" {
+		t.Fatalf("after reset: expected 'tool_calls', got %q", r3.Choices[0].FinishReason)
+	}
+}
