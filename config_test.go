@@ -299,3 +299,31 @@ func TestConfigTokenDelay(t *testing.T) {
 		t.Errorf("tokenDelay = %v, want 50ms", s.tokenDelay)
 	}
 }
+
+func TestConfigVerbose(t *testing.T) {
+	data := []byte(`
+server:
+  verbose: true
+rules:
+  - pattern: "hello"
+    responses: ["Hi!"]
+`)
+	cfg, err := ParseConfig(data, "test.yaml")
+	if err != nil {
+		t.Fatalf("ParseConfig: %v", err)
+	}
+	if cfg.Server.Verbose == nil || !*cfg.Server.Verbose {
+		t.Error("verbose should be true")
+	}
+	opts, err := cfg.ToOptions()
+	if err != nil {
+		t.Fatalf("ToOptions: %v", err)
+	}
+	s := &Server{}
+	for _, opt := range opts {
+		opt(s)
+	}
+	if !s.verbose {
+		t.Error("server verbose should be true after applying options")
+	}
+}

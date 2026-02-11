@@ -3,8 +3,10 @@ package llmock_test
 import (
 	"bytes"
 	"encoding/json"
+	"log"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -420,5 +422,172 @@ func TestBothEndpoints_SameContent(t *testing.T) {
 
 	if openaiContent != anthropicContent {
 		t.Errorf("endpoints produced different content: OpenAI=%q, Anthropic=%q", openaiContent, anthropicContent)
+	}
+}
+
+func TestVerbose_LogsUserMessageAndRule(t *testing.T) {
+	var buf bytes.Buffer
+	logger := log.New(&buf, "", 0)
+
+	s := llmock.New(
+		llmock.WithVerbose(true),
+		llmock.WithLogger(logger),
+		llmock.WithRules(llmock.Rule{
+			Pattern:   regexp.MustCompile(`(?i)hello`),
+			Responses: []string{"Hi there!"},
+		}),
+	)
+	ts := httptest.NewServer(s.Handler())
+	defer ts.Close()
+
+	body := `{"model":"test","messages":[{"role":"user","content":"Hello!"}]}`
+	resp, err := http.Post(ts.URL+"/v1/chat/completions", "application/json", strings.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+
+	logLine := buf.String()
+	if !strings.Contains(logLine, `user="Hello!"`) {
+		t.Errorf("verbose log missing user message, got: %s", logLine)
+	}
+	if !strings.Contains(logLine, `rule="(?i)hello"`) {
+		t.Errorf("verbose log missing matched rule, got: %s", logLine)
+	}
+	if !strings.Contains(logLine, "-> 200") {
+		t.Errorf("verbose log missing status code, got: %s", logLine)
+	}
+	if !strings.Contains(logLine, "POST /v1/chat/completions") {
+		t.Errorf("verbose log missing method/path, got: %s", logLine)
+	}
+}
+
+func TestVerbose_AnthropicEndpoint(t *testing.T) {
+	var buf bytes.Buffer
+	logger := log.New(&buf, "", 0)
+
+	s := llmock.New(
+		llmock.WithVerbose(true),
+		llmock.WithLogger(logger),
+		llmock.WithResponder(llmock.EchoResponder{}),
+	)
+	ts := httptest.NewServer(s.Handler())
+	defer ts.Close()
+
+	body := `{"model":"test","messages":[{"role":"user","content":"ping"}],"max_tokens":100}`
+	resp, err := http.Post(ts.URL+"/v1/messages", "application/json", strings.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+
+	logLine := buf.String()
+	if !strings.Contains(logLine, `user="ping"`) {
+		t.Errorf("verbose log missing user message, got: %s", logLine)
+	}
+	if !strings.Contains(logLine, "POST /v1/messages") {
+		t.Errorf("verbose log missing method/path, got: %s", logLine)
+	}
+}
+
+func TestVerbose_GeminiEndpoint(t *testing.T) {
+	var buf bytes.Buffer
+	logger := log.New(&buf, "", 0)
+
+	s := llmock.New(
+		llmock.WithVerbose(true),
+		llmock.WithLogger(logger),
+		llmock.WithResponder(llmock.EchoResponder{}),
+	)
+	ts := httptest.NewServer(s.Handler())
+	defer ts.Close()
+
+	body := `{"contents":[{"role":"user","parts":[{"text":"test input"}]}]}`
+	resp, err := http.Post(ts.URL+"/v1beta/models/gemini-pro:generateContent", "application/json", strings.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+
+	logLine := buf.String()
+	if !strings.Contains(logLine, `user="test input"`) {
+		t.Errorf("verbose log missing user message, got: %s", logLine)
+	}
+	if !strings.Contains(logLine, "POST /v1beta/models/gemini-pro:generateContent") {
+		t.Errorf("verbose log missing Gemini path, got: %s", logLine)
+	}
+}
+
+func TestVerbose_DisabledByDefault(t *testing.T) {
+	var buf bytes.Buffer
+	logger := log.New(&buf, "", 0)
+
+	s := llmock.New(llmock.WithLogger(logger), llmock.WithResponder(llmock.EchoResponder{}))
+	ts := httptest.NewServer(s.Handler())
+	defer ts.Close()
+
+	body := `{"model":"test","messages":[{"role":"user","content":"Hello!"}]}`
+	resp, err := http.Post(ts.URL+"/v1/chat/completions", "application/json", strings.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+
+	if buf.Len() != 0 {
+		t.Errorf("expected no verbose output when disabled, got: %s", buf.String())
+	}
+}
+
+func TestVerbose_NoRuleMatch(t *testing.T) {
+	var buf bytes.Buffer
+	logger := log.New(&buf, "", 0)
+
+	s := llmock.New(
+		llmock.WithVerbose(true),
+		llmock.WithLogger(logger),
+		llmock.WithResponder(llmock.EchoResponder{}),
+	)
+	ts := httptest.NewServer(s.Handler())
+	defer ts.Close()
+
+	body := `{"model":"test","messages":[{"role":"user","content":"something"}]}`
+	resp, err := http.Post(ts.URL+"/v1/chat/completions", "application/json", strings.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+
+	logLine := buf.String()
+	if !strings.Contains(logLine, `user="something"`) {
+		t.Errorf("verbose log missing user message, got: %s", logLine)
+	}
+	// No rule= should appear since EchoResponder doesn't match rules.
+	if strings.Contains(logLine, `rule=`) {
+		t.Errorf("verbose log should not contain rule= for echo responder, got: %s", logLine)
+	}
+}
+
+func TestVerbose_ErrorStatus(t *testing.T) {
+	var buf bytes.Buffer
+	logger := log.New(&buf, "", 0)
+
+	s := llmock.New(
+		llmock.WithVerbose(true),
+		llmock.WithLogger(logger),
+	)
+	ts := httptest.NewServer(s.Handler())
+	defer ts.Close()
+
+	// Empty messages should give 400.
+	body := `{"model":"test","messages":[]}`
+	resp, err := http.Post(ts.URL+"/v1/chat/completions", "application/json", strings.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+
+	logLine := buf.String()
+	if !strings.Contains(logLine, "-> 400") {
+		t.Errorf("verbose log should show 400 status, got: %s", logLine)
 	}
 }

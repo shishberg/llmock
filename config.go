@@ -26,8 +26,9 @@ type Config struct {
 
 // ServerConfig holds server-level settings.
 type ServerConfig struct {
-	Port     int  `yaml:"port" json:"port"`
+	Port     int   `yaml:"port" json:"port"`
 	AdminAPI *bool `yaml:"admin_api" json:"admin_api"`
+	Verbose  *bool `yaml:"verbose" json:"verbose"`
 }
 
 // DefaultConfig holds default response behavior settings.
@@ -124,6 +125,10 @@ func (c *Config) ToOptions() ([]Option, error) {
 
 	if c.Server.AdminAPI != nil {
 		opts = append(opts, WithAdminAPI(*c.Server.AdminAPI))
+	}
+
+	if c.Server.Verbose != nil {
+		opts = append(opts, WithVerbose(*c.Server.Verbose))
 	}
 
 	if c.CorpusFile != "" {

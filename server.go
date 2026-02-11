@@ -6,10 +6,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	mrand "math/rand/v2"
 	"net/http"
 	"os"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -61,6 +63,9 @@ type Server struct {
 	mcpConfig     MCPConfig
 	mcp           *mcpState
 	control       *controlPlane
+	verbose       bool
+	logger        *log.Logger
+	reqMeta       sync.Map // *http.Request → *verboseMeta
 }
 
 // New creates a new Server with the given options.
@@ -161,9 +166,85 @@ func WithAutoToolCalls(enabled bool) Option {
 	}
 }
 
+// WithVerbose enables verbose request logging. When enabled, each request
+// is logged with method, path, extracted user message, matched rule pattern,
+// HTTP status, and response time.
+func WithVerbose(enabled bool) Option {
+	return func(s *Server) {
+		s.verbose = enabled
+	}
+}
+
+// WithLogger sets the logger used for verbose output. If not set,
+// log.Default() is used.
+func WithLogger(l *log.Logger) Option {
+	return func(s *Server) {
+		s.logger = l
+	}
+}
+
+// verboseMeta holds per-request metadata for verbose logging.
+type verboseMeta struct {
+	userMessage string
+	matchedRule string
+}
+
 // Handler returns the http.Handler for this server.
+// When verbose logging is enabled, the returned handler wraps the mux with
+// middleware that logs method, path, user message, matched rule, status, and timing.
 func (s *Server) Handler() http.Handler {
-	return s.mux
+	if !s.verbose {
+		return s.mux
+	}
+	logger := s.logger
+	if logger == nil {
+		logger = log.Default()
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		start := time.Now()
+		rw := &verboseResponseWriter{ResponseWriter: w, status: http.StatusOK}
+		s.mux.ServeHTTP(rw, r)
+		elapsed := time.Since(start)
+		user := ""
+		rule := ""
+		if meta, ok := s.reqMeta.LoadAndDelete(r); ok {
+			m := meta.(*verboseMeta)
+			user = m.userMessage
+			rule = m.matchedRule
+		}
+		var parts []string
+		parts = append(parts, fmt.Sprintf("%s %s", r.Method, r.URL.Path))
+		if user != "" {
+			parts = append(parts, fmt.Sprintf("user=%q", user))
+		}
+		if rule != "" {
+			parts = append(parts, fmt.Sprintf("rule=%q", rule))
+		}
+		parts = append(parts, fmt.Sprintf("-> %d (%s)", rw.status, elapsed.Round(time.Millisecond)))
+		logger.Printf("llmock: %s", strings.Join(parts, " "))
+	})
+}
+
+// verboseResponseWriter wraps http.ResponseWriter to capture the status code
+// for verbose logging.
+type verboseResponseWriter struct {
+	http.ResponseWriter
+	status      int
+	wroteHeader bool
+}
+
+func (rw *verboseResponseWriter) WriteHeader(code int) {
+	if !rw.wroteHeader {
+		rw.status = code
+		rw.wroteHeader = true
+	}
+	rw.ResponseWriter.WriteHeader(code)
+}
+
+func (rw *verboseResponseWriter) Flush() {
+	if f, ok := rw.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
 }
 
 // ChatCompletionRequest represents an OpenAI chat completion request.
@@ -719,22 +800,30 @@ type errorResponse struct {
 }
 
 // logAdminRequest records a request in the admin log if admin is enabled.
+// When verbose logging is enabled, it also stores per-request metadata
+// for the verbose middleware to include in its log line.
 func (s *Server) logAdminRequest(r *http.Request, messages []InternalMessage, responseText string) {
-	if s.admin == nil {
-		return
-	}
 	matchedRule := ""
 	if ar, ok := s.responder.(*adminResponder); ok {
 		matchedRule = ar.getLastMatchedRule()
 	}
-	s.admin.logRequest(requestEntry{
-		Timestamp:   time.Now(),
-		Method:      r.Method,
-		Path:        r.URL.Path,
-		UserMessage: extractInput(messages),
-		MatchedRule: matchedRule,
-		Response:    responseText,
-	})
+	userMessage := extractInput(messages)
+	if s.admin != nil {
+		s.admin.logRequest(requestEntry{
+			Timestamp:   time.Now(),
+			Method:      r.Method,
+			Path:        r.URL.Path,
+			UserMessage: userMessage,
+			MatchedRule: matchedRule,
+			Response:    responseText,
+		})
+	}
+	if s.verbose {
+		s.reqMeta.Store(r, &verboseMeta{
+			userMessage: userMessage,
+			matchedRule: matchedRule,
+		})
+	}
 }
 
 // extractInput finds the last user message, or falls back to the last message.

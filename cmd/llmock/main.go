@@ -37,6 +37,12 @@ func main() {
 		cfg = &llmock.Config{}
 	}
 
+	// Apply --verbose flag.
+	if *verbose {
+		v := true
+		cfg.Server.Verbose = &v
+	}
+
 	// Convert config to options.
 	opts, err := cfg.ToOptions()
 	if err != nil {
@@ -72,10 +78,7 @@ func main() {
 		return
 	}
 
-	var handler http.Handler = s.Handler()
-	if *verbose {
-		handler = verboseMiddleware(handler)
-	}
+	handler := s.Handler()
 
 	// Startup banner.
 	adminStatus := "enabled"
@@ -121,35 +124,3 @@ func main() {
 	<-done
 }
 
-// verboseMiddleware logs timestamp, method, path, status, and response time for each request.
-func verboseMiddleware(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		start := time.Now()
-		rw := &responseWriter{ResponseWriter: w, status: http.StatusOK}
-		next.ServeHTTP(rw, r)
-		elapsed := time.Since(start)
-		log.Printf("llmock: %s %s -> %d (%s)",
-			r.Method, r.URL.Path, rw.status, elapsed.Round(time.Millisecond))
-	})
-}
-
-// responseWriter wraps http.ResponseWriter to capture the status code.
-type responseWriter struct {
-	http.ResponseWriter
-	status      int
-	wroteHeader bool
-}
-
-func (rw *responseWriter) WriteHeader(code int) {
-	if !rw.wroteHeader {
-		rw.status = code
-		rw.wroteHeader = true
-	}
-	rw.ResponseWriter.WriteHeader(code)
-}
-
-func (rw *responseWriter) Flush() {
-	if f, ok := rw.ResponseWriter.(http.Flusher); ok {
-		f.Flush()
-	}
-}

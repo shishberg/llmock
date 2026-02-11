@@ -357,3 +357,21 @@ Added `MaxCalls` field to rules that limits how many times a tool call fires, en
 - Admin API `GET /_mock/rules` now includes `max_calls` in the JSON response when set
 - 7 new tests: basic max_calls=1 fall-to-text, no-text-responses skips to next rule, unlimited by default (regression guard), max_calls=2 fires twice then text, Anthropic endpoint integration, config file parsing, admin reset restores counter
 - All 222 tests pass, build clean, vet clean, no race conditions
+
+## llmock-wke: Verbose logging includes extracted user message and matched rule
+
+Enhanced verbose logging to include the extracted user message and matched rule pattern alongside HTTP method, path, status, and timing:
+
+- New `WithVerbose(bool)` option: enables enriched request logging (disabled by default)
+- New `WithLogger(*log.Logger)` option: allows custom logger for verbose output (defaults to `log.Default()`)
+- Verbose log format: `llmock: POST /v1/chat/completions user="Hello!" rule="(?i)hello" -> 200 (12ms)`
+- User message and matched rule are omitted from the log line when empty (e.g., no rule match, or error before message extraction)
+- Implemented as a handler wrapper in `Handler()`: when verbose is enabled, the returned handler captures HTTP status/timing and reads per-request metadata stored by the request handlers
+- Per-request metadata stored via `sync.Map` keyed by `*http.Request` for safe concurrent access; cleaned up after each request
+- `logAdminRequest` extended to store user message and matched rule for the verbose middleware when verbose mode is active
+- Works with all three API endpoints: OpenAI, Anthropic, and Gemini
+- Config file support: `verbose: true` in the `server:` section of YAML/JSON config
+- CLI `--verbose` flag now uses `WithVerbose(true)` instead of a separate HTTP middleware, providing richer log output
+- Removed the old `verboseMiddleware` and `responseWriter` from `cmd/llmock/main.go` — replaced by library-level `verboseResponseWriter` in `server.go`
+- 7 new tests: user message + rule in OpenAI log, Anthropic endpoint logging, Gemini endpoint logging, disabled by default, no rule match omits rule field, error status (400) logged, config file parsing
+- All 229 tests pass, build clean, vet clean, no race conditions
