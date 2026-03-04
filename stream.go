@@ -354,7 +354,10 @@ func (s *Server) streamAnthropicToolCall(w http.ResponseWriter, r *http.Request,
 	flusher.Flush()
 
 	for i, tc := range toolCalls {
-		tcID := generateToolCallID("toolu_")
+		tcID := tc.ID
+		if !strings.HasPrefix(tcID, "toolu_") {
+			tcID = generateToolCallID("toolu_")
+		}
 
 		// content_block_start for tool_use
 		blockStart := map[string]any{

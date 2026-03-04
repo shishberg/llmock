@@ -1,3 +1,3 @@
 
-# Use bd merge for beads JSONL files
-.beads/issues.jsonl merge=beads
+# Use tk merge for ticket JSONL files
+.ticket/issues.jsonl merge=ticket

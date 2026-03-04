@@ -793,8 +793,10 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 
 		content := make([]AnthropicContentBlock, len(response.ToolCalls))
 		for i, tc := range response.ToolCalls {
-			// Use Anthropic-style ID
-			tcID := generateToolCallID("toolu_")
+			tcID := tc.ID
+			if !strings.HasPrefix(tcID, "toolu_") {
+				tcID = generateToolCallID("toolu_")
+			}
 			content[i] = AnthropicContentBlock{
 				Type:  "tool_use",
 				ID:    tcID,

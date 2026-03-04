@@ -12,11 +12,11 @@ RUN ARCH=$(dpkg --print-architecture) \
     && curl -fsSL "https://go.dev/dl/go1.25.7.linux-${ARCH}.tar.gz" \
     | tar -C /usr/local -xz
 
-# Install beads task tracker (as vscode user so it goes to ~/go/bin)
+# Install ticket task tracker (as vscode user so it goes to ~/go/bin)
 USER vscode
 ENV PATH=$PATH:/home/vscode/.local/bin:/home/vscode/go/bin
-# RUN go install github.com/steveyegge/beads/cmd/bd@v0.49.3
-RUN curl -fsSL https://raw.githubusercontent.com/steveyegge/beads/main/scripts/install.sh | bash
+# RUN go install github.com/steveyegge/ticket/cmd/tk@latest
+RUN curl -fsSL https://raw.githubusercontent.com/steveyegge/ticket/main/scripts/install.sh | bash
 
-ENV BEADS_NO_DAEMON=1
+ENV TICKET_NO_DAEMON=1
 ENV TZ="Australia/Sydney"

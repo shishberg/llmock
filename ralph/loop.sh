@@ -110,7 +110,7 @@ while true; do
     '
 
     # Check remaining tasks
-    CURRENT_READY=$(bd ready --json 2>/dev/null)
+    CURRENT_READY=$(tk ready --json 2>/dev/null)
 
     if [ "$CURRENT_READY" = "[]" ] || [ -z "$CURRENT_READY" ]; then
         echo -e "\n\033[38;5;229m\033[1mNo tasks remaining, exiting.\033[0m"
