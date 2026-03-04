@@ -1,6 +1,7 @@
 package llmock
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -81,7 +82,7 @@ func (t *CLITransport) Run(args []string, w io.Writer) int {
 	var responseText string
 	if prompt != "" {
 		messages := []InternalMessage{{Role: "user", Content: prompt}}
-		resp, err := t.server.responder.Respond(messages)
+		resp, err := t.server.responder.Respond(context.Background(), Request{Messages: messages, Model: model})
 		if err != nil {
 			responseText = "I understand. Could you tell me more about that?"
 		} else {

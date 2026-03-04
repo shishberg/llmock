@@ -19,6 +19,7 @@ func main() {
 	port := flag.Int("port", 0, "port to listen on (overrides config)")
 	verbose := flag.Bool("verbose", false, "log all requests/responses to stderr")
 	mcpStdio := flag.Bool("mcp-stdio", false, "run MCP control plane over stdin/stdout (no HTTP server)")
+	bridge := flag.Bool("bridge", false, "enable interactive bridge mode")
 	flag.Parse()
 
 	// Load config: explicit --config, or auto-discover, or defaults.
@@ -41,6 +42,13 @@ func main() {
 	if *verbose {
 		v := true
 		cfg.Server.Verbose = &v
+	}
+
+	// Apply --bridge flag.
+	if *bridge {
+		if cfg.Bridge == nil {
+			cfg.Bridge = &llmock.BridgeConfigYAML{}
+		}
 	}
 
 	// Convert config to options.
@@ -85,6 +93,10 @@ func main() {
 	if cfg.Server.AdminAPI != nil && !*cfg.Server.AdminAPI {
 		adminStatus = "disabled"
 	}
+	bridgeStatus := "disabled"
+	if cfg.Bridge != nil {
+		bridgeStatus = "enabled"
+	}
 	ruleCount := len(cfg.Rules)
 	corpusInfo := "default"
 	if cfg.CorpusFile != "" {
@@ -93,8 +105,8 @@ func main() {
 	if cfgPath != "" {
 		log.Printf("llmock: loaded config from %s", cfgPath)
 	}
-	log.Printf("llmock: port=%d rules=%d corpus=%s admin=%s",
-		p, ruleCount, corpusInfo, adminStatus)
+	log.Printf("llmock: port=%d rules=%d corpus=%s admin=%s bridge=%s",
+		p, ruleCount, corpusInfo, adminStatus, bridgeStatus)
 
 	// Set up server with graceful shutdown.
 	addr := fmt.Sprintf(":%d", p)

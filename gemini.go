@@ -199,27 +199,38 @@ func (s *Server) handleGeminiGenerate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	internal := geminiToInternal(req.Contents, req.SystemInstruction)
-	response, err := s.responder.Respond(internal)
+	system := ""
+	if req.SystemInstruction != nil {
+		system = geminiContentText(*req.SystemInstruction)
+	}
+	reqTools := geminiToRequestTools(req.Tools)
+	response, err := s.responder.Respond(r.Context(), Request{
+		Messages: internal,
+		System:   system,
+		Tools:    reqTools,
+		Model:    model,
+	})
 	if err != nil {
 		writeGeminiError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 
-	// If the conversation contains tool results, suppress tool call responses
-	// to avoid infinite tool-call loops.
-	hasToolResults := geminiHasToolResults(req.Contents)
+	if !response.Final {
+		// If the conversation contains tool results, suppress tool call responses
+		// to avoid infinite tool-call loops.
+		hasToolResults := geminiHasToolResults(req.Contents)
 
-	// Auto-generate a tool call if enabled and no rule produced one.
-	if !hasToolResults && s.autoToolCalls && !response.IsToolCall() && len(req.Tools) > 0 {
-		reqTools := geminiToRequestTools(req.Tools)
-		if tc, ok := generateToolCallFromSchema(reqTools, s.rng); ok {
-			response = Response{ToolCalls: []ToolCall{tc}}
+		// Auto-generate a tool call if enabled and no rule produced one.
+		if !hasToolResults && s.autoToolCalls && !response.IsToolCall() && len(req.Tools) > 0 {
+			if tc, ok := generateToolCallFromSchema(reqTools, s.rng); ok {
+				response = Response{ToolCalls: []ToolCall{tc}}
+			}
 		}
-	}
 
-	// Force text response when tool results are present.
-	if hasToolResults && response.IsToolCall() {
-		response = s.forceTextResponse(response, internal)
+		// Force text response when tool results are present.
+		if hasToolResults && response.IsToolCall() {
+			response = s.forceTextResponse(response, internal)
+		}
 	}
 
 	s.logAdminRequest(r, internal, response.Text)
@@ -329,27 +340,38 @@ func (s *Server) handleGeminiStream(w http.ResponseWriter, r *http.Request) {
 	}
 
 	internal := geminiToInternal(req.Contents, req.SystemInstruction)
-	response, err := s.responder.Respond(internal)
+	streamSystem := ""
+	if req.SystemInstruction != nil {
+		streamSystem = geminiContentText(*req.SystemInstruction)
+	}
+	streamReqTools := geminiToRequestTools(req.Tools)
+	response, err := s.responder.Respond(r.Context(), Request{
+		Messages: internal,
+		System:   streamSystem,
+		Tools:    streamReqTools,
+		Model:    model,
+	})
 	if err != nil {
 		writeGeminiError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 
-	// If the conversation contains tool results, suppress tool call responses
-	// to avoid infinite tool-call loops.
-	hasToolResults := geminiHasToolResults(req.Contents)
+	if !response.Final {
+		// If the conversation contains tool results, suppress tool call responses
+		// to avoid infinite tool-call loops.
+		hasToolResults := geminiHasToolResults(req.Contents)
 
-	// Auto-generate a tool call if enabled and no rule produced one.
-	if !hasToolResults && s.autoToolCalls && !response.IsToolCall() && len(req.Tools) > 0 {
-		reqTools := geminiToRequestTools(req.Tools)
-		if tc, ok := generateToolCallFromSchema(reqTools, s.rng); ok {
-			response = Response{ToolCalls: []ToolCall{tc}}
+		// Auto-generate a tool call if enabled and no rule produced one.
+		if !hasToolResults && s.autoToolCalls && !response.IsToolCall() && len(req.Tools) > 0 {
+			if tc, ok := generateToolCallFromSchema(streamReqTools, s.rng); ok {
+				response = Response{ToolCalls: []ToolCall{tc}}
+			}
 		}
-	}
 
-	// Force text response when tool results are present.
-	if hasToolResults && response.IsToolCall() {
-		response = s.forceTextResponse(response, internal)
+		// Force text response when tool results are present.
+		if hasToolResults && response.IsToolCall() {
+			response = s.forceTextResponse(response, internal)
+		}
 	}
 
 	s.logAdminRequest(r, internal, response.Text)

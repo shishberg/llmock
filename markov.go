@@ -1,6 +1,7 @@
 package llmock
 
 import (
+	"context"
 	_ "embed"
 	"io"
 	"math/rand/v2"
@@ -126,8 +127,8 @@ func NewMarkovResponder(seed *int64) *MarkovResponder {
 }
 
 // Respond generates a Markov chain response.
-func (mr *MarkovResponder) Respond(messages []InternalMessage) (Response, error) {
-	if extractInput(messages) == "" {
+func (mr *MarkovResponder) Respond(_ context.Context, req Request) (Response, error) {
+	if extractInput(req.Messages) == "" {
 		return Response{}, errNoMessages
 	}
 	mr.mu.Lock()

@@ -19,9 +19,15 @@ type Config struct {
 	Defaults DefaultConfig `yaml:"defaults" json:"defaults"`
 	Rules    []RuleConfig  `yaml:"rules" json:"rules"`
 
-	CorpusFile string    `yaml:"corpus_file" json:"corpus_file"`
-	Faults     []Fault   `yaml:"faults" json:"faults"`
-	MCP        *MCPConfig `yaml:"mcp,omitempty" json:"mcp,omitempty"`
+	CorpusFile string            `yaml:"corpus_file" json:"corpus_file"`
+	Faults     []Fault           `yaml:"faults" json:"faults"`
+	MCP        *MCPConfig        `yaml:"mcp,omitempty" json:"mcp,omitempty"`
+	Bridge     *BridgeConfigYAML `yaml:"bridge,omitempty" json:"bridge,omitempty"`
+}
+
+// BridgeConfigYAML is the config-file representation of bridge settings.
+type BridgeConfigYAML struct {
+	TimeoutMS int `yaml:"timeout_ms,omitempty" json:"timeout_ms,omitempty"`
 }
 
 // ServerConfig holds server-level settings.
@@ -149,6 +155,14 @@ func (c *Config) ToOptions() ([]Option, error) {
 
 	if c.MCP != nil {
 		opts = append(opts, WithMCP(*c.MCP))
+	}
+
+	if c.Bridge != nil {
+		bcfg := BridgeConfig{}
+		if c.Bridge.TimeoutMS > 0 {
+			bcfg.Timeout = durationFromMS(c.Bridge.TimeoutMS)
+		}
+		opts = append(opts, WithBridge(bcfg))
 	}
 
 	return opts, nil

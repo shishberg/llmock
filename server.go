@@ -1,11 +1,13 @@
 package llmock
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	mrand "math/rand/v2"
 	"net/http"
@@ -27,21 +29,36 @@ type InternalMessage struct {
 	Content string
 }
 
+// Request carries the full context of an LLM API request to a Responder.
+type Request struct {
+	Messages  []InternalMessage
+	System    string
+	Tools     []RequestTool
+	Model     string
+	MaxTokens int
+	RawBody   []byte // original HTTP body, for passthrough
+}
+
 // Responder generates a response given a conversation.
 type Responder interface {
-	Respond(messages []InternalMessage) (Response, error)
+	Respond(ctx context.Context, req Request) (Response, error)
 }
 
 // EchoResponder echoes the last user message (or last message if no user message).
 type EchoResponder struct{}
 
 // Respond returns the last user message content, or the last message if there is no user message.
-func (e EchoResponder) Respond(messages []InternalMessage) (Response, error) {
-	input := extractInput(messages)
+func (e EchoResponder) Respond(_ context.Context, req Request) (Response, error) {
+	input := extractInput(req.Messages)
 	if input == "" {
 		return Response{}, errNoMessages
 	}
 	return Response{Text: input}, nil
+}
+
+// BridgeConfig holds runtime configuration for the bridge responder.
+type BridgeConfig struct {
+	Timeout time.Duration // default 120s
 }
 
 // Server is a mock LLM API server.
@@ -66,6 +83,9 @@ type Server struct {
 	verbose       bool
 	logger        *log.Logger
 	reqMeta       sync.Map // *http.Request → *verboseMeta
+	bridgeEnabled bool
+	bridgeConfig  BridgeConfig
+	bridge        *BridgeResponder
 }
 
 // New creates a new Server with the given options.
@@ -108,6 +128,12 @@ func New(opts ...Option) *Server {
 	s.rng = rng
 	s.faults = newFaultState(s.initialFaults, rng)
 
+	// Bridge mode: create BridgeResponder and set as the primary responder.
+	if s.bridgeEnabled {
+		s.bridge = NewBridgeResponder(s.bridgeConfig)
+		s.responder = s.bridge
+	}
+
 	// Admin API is enabled by default.
 	adminOn := s.adminEnabled == nil || *s.adminEnabled
 	if adminOn {
@@ -134,6 +160,10 @@ func New(opts ...Option) *Server {
 
 	if s.mcpEnabled {
 		s.mux.HandleFunc("POST /mcp", s.handleMCP)
+	}
+
+	if s.bridge != nil {
+		s.bridge.registerRoutes(s.mux)
 	}
 
 	if adminOn {
@@ -180,6 +210,16 @@ func WithVerbose(enabled bool) Option {
 func WithLogger(l *log.Logger) Option {
 	return func(s *Server) {
 		s.logger = l
+	}
+}
+
+// WithBridge enables the interactive bridge responder. When enabled,
+// incoming LLM requests are forwarded via HTTP long-poll endpoints
+// so an external consumer can craft responses interactively.
+func WithBridge(cfg BridgeConfig) Option {
+	return func(s *Server) {
+		s.bridgeEnabled = true
+		s.bridgeConfig = cfg
 	}
 }
 
@@ -374,27 +414,33 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	}
 
 	internal := toInternalMessages(req.Messages)
-	response, err := s.responder.Respond(internal)
+	reqTools := openAIToRequestTools(req.Tools)
+	response, err := s.responder.Respond(r.Context(), Request{
+		Messages: internal,
+		Tools:    reqTools,
+		Model:    req.Model,
+	})
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 
-	// If the conversation contains tool results, suppress tool call responses
-	// to avoid infinite tool-call loops.
-	hasToolResults := openAIHasToolResults(req.Messages)
+	if !response.Final {
+		// If the conversation contains tool results, suppress tool call responses
+		// to avoid infinite tool-call loops.
+		hasToolResults := openAIHasToolResults(req.Messages)
 
-	// Auto-generate a tool call if enabled and no rule produced one.
-	if !hasToolResults && s.autoToolCalls && !response.IsToolCall() && len(req.Tools) > 0 {
-		reqTools := openAIToRequestTools(req.Tools)
-		if tc, ok := generateToolCallFromSchema(reqTools, s.rng); ok {
-			response = Response{ToolCalls: []ToolCall{tc}}
+		// Auto-generate a tool call if enabled and no rule produced one.
+		if !hasToolResults && s.autoToolCalls && !response.IsToolCall() && len(req.Tools) > 0 {
+			if tc, ok := generateToolCallFromSchema(reqTools, s.rng); ok {
+				response = Response{ToolCalls: []ToolCall{tc}}
+			}
 		}
-	}
 
-	// Force text response when tool results are present.
-	if hasToolResults && response.IsToolCall() {
-		response = s.forceTextResponse(response, internal)
+		// Force text response when tool results are present.
+		if hasToolResults && response.IsToolCall() {
+			response = s.forceTextResponse(response, internal)
+		}
 	}
 
 	s.logAdminRequest(r, internal, response.Text)
@@ -643,8 +689,14 @@ func estimateAnthropicTokens(messages []AnthropicMessage) int {
 }
 
 func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
+	rawBody, err := io.ReadAll(r.Body)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "reading body: "+err.Error())
+		return
+	}
+
 	var req AnthropicRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := json.Unmarshal(rawBody, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
 		return
 	}
@@ -661,28 +713,44 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Extract system prompt from raw JSON (handles both string and array formats).
+	var rawReq struct {
+		System json.RawMessage `json:"system"`
+	}
+	json.Unmarshal(rawBody, &rawReq)
+	system := extractAnthropicSystem(rawReq.System)
+
 	internal := anthropicToInternal(req.Messages)
-	response, err := s.responder.Respond(internal)
+	reqTools := anthropicToRequestTools(req.Tools)
+	response, err := s.responder.Respond(r.Context(), Request{
+		Messages:  internal,
+		System:    system,
+		Tools:     reqTools,
+		Model:     req.Model,
+		MaxTokens: req.MaxTokens,
+		RawBody:   rawBody,
+	})
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 
-	// If the conversation contains tool results, suppress tool call responses
-	// to avoid infinite tool-call loops.
-	hasToolResults := anthropicHasToolResults(req.Messages)
+	if !response.Final {
+		// If the conversation contains tool results, suppress tool call responses
+		// to avoid infinite tool-call loops.
+		hasToolResults := anthropicHasToolResults(req.Messages)
 
-	// Auto-generate a tool call if enabled and no rule produced one.
-	if !hasToolResults && s.autoToolCalls && !response.IsToolCall() && len(req.Tools) > 0 {
-		reqTools := anthropicToRequestTools(req.Tools)
-		if tc, ok := generateToolCallFromSchema(reqTools, s.rng); ok {
-			response = Response{ToolCalls: []ToolCall{tc}}
+		// Auto-generate a tool call if enabled and no rule produced one.
+		if !hasToolResults && s.autoToolCalls && !response.IsToolCall() && len(req.Tools) > 0 {
+			if tc, ok := generateToolCallFromSchema(reqTools, s.rng); ok {
+				response = Response{ToolCalls: []ToolCall{tc}}
+			}
 		}
-	}
 
-	// Force text response when tool results are present.
-	if hasToolResults && response.IsToolCall() {
-		response = s.forceTextResponse(response, internal)
+		// Force text response when tool results are present.
+		if hasToolResults && response.IsToolCall() {
+			response = s.forceTextResponse(response, internal)
+		}
 	}
 
 	s.logAdminRequest(r, internal, response.Text)
@@ -905,11 +973,39 @@ func anthropicHasToolResults(messages []AnthropicMessage) bool {
 // Used when the request contains tool results to avoid infinite tool-call loops.
 func (s *Server) forceTextResponse(resp Response, messages []InternalMessage) Response {
 	if s.markov != nil {
-		if r, err := s.markov.Respond(messages); err == nil {
+		if r, err := s.markov.Respond(context.Background(), Request{Messages: messages}); err == nil {
 			return r
 		}
 	}
 	return Response{Text: "I've processed the tool results. Is there anything else I can help with?"}
+}
+
+// extractAnthropicSystem extracts the system prompt from Anthropic's system field,
+// which can be either a string or an array of content blocks.
+func extractAnthropicSystem(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	// Try as string first.
+	var s string
+	if err := json.Unmarshal(raw, &s); err == nil {
+		return s
+	}
+	// Try as array of content blocks.
+	var blocks []struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	}
+	if err := json.Unmarshal(raw, &blocks); err == nil {
+		var parts []string
+		for _, b := range blocks {
+			if b.Type == "text" && b.Text != "" {
+				parts = append(parts, b.Text)
+			}
+		}
+		return strings.Join(parts, "\n")
+	}
+	return ""
 }
 
 func writeError(w http.ResponseWriter, code int, msg string) {

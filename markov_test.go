@@ -1,6 +1,7 @@
 package llmock_test
 
 import (
+	"context"
 	"encoding/json"
 	"math/rand/v2"
 	"net/http"
@@ -169,8 +170,9 @@ func TestMarkovResponder_DeterministicWithSeed(t *testing.T) {
 	mr2 := llmock.NewMarkovResponder(&seed2)
 
 	msgs := []llmock.InternalMessage{{Role: "user", Content: "hello"}}
-	out1, _ := mr1.Respond(msgs)
-	out2, _ := mr2.Respond(msgs)
+	req := llmock.Request{Messages: msgs}
+	out1, _ := mr1.Respond(context.Background(), req)
+	out2, _ := mr2.Respond(context.Background(), req)
 
 	if out1.Text != out2.Text {
 		t.Errorf("expected deterministic output, got %q and %q", out1.Text, out2.Text)
@@ -180,7 +182,7 @@ func TestMarkovResponder_DeterministicWithSeed(t *testing.T) {
 func TestMarkovResponder_NoMessages(t *testing.T) {
 	seed := int64(42)
 	mr := llmock.NewMarkovResponder(&seed)
-	_, err := mr.Respond(nil)
+	_, err := mr.Respond(context.Background(), llmock.Request{})
 	if err == nil {
 		t.Error("expected error for nil messages")
 	}

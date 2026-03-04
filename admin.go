@@ -1,6 +1,7 @@
 package llmock
 
 import (
+	"context"
 	"encoding/json"
 	"math/rand/v2"
 	"net/http"
@@ -205,8 +206,8 @@ type adminResponder struct {
 	lastMatchedRule string
 }
 
-func (ar *adminResponder) Respond(messages []InternalMessage) (Response, error) {
-	input := extractInput(messages)
+func (ar *adminResponder) Respond(ctx context.Context, req Request) (Response, error) {
+	input := extractInput(req.Messages)
 	if input == "" {
 		return Response{}, errNoMessages
 	}
@@ -217,7 +218,7 @@ func (ar *adminResponder) Respond(messages []InternalMessage) (Response, error) 
 	if resp.Text != "" || resp.IsToolCall() {
 		return resp, nil
 	}
-	return ar.fallback.Respond(messages)
+	return ar.fallback.Respond(ctx, req)
 }
 
 func (ar *adminResponder) getLastMatchedRule() string {

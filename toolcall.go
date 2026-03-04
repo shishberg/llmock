@@ -21,9 +21,11 @@ type ToolCall struct {
 
 // Response is the result from a Responder. It carries either text content
 // or one or more tool calls (but not both).
+// When Final is true, post-processing (auto-tool-calls, force-text) is skipped.
 type Response struct {
 	Text      string
 	ToolCalls []ToolCall
+	Final     bool
 }
 
 // IsToolCall returns true if this response contains tool calls.

@@ -1,6 +1,7 @@
 package llmock
 
 import (
+	"context"
 	"fmt"
 	"math/rand/v2"
 	"os"
@@ -48,8 +49,8 @@ func NewRuleResponder(rules []Rule) *RuleResponder {
 
 // Respond finds the first rule matching the last user message and expands
 // its response template with capture groups.
-func (r *RuleResponder) Respond(messages []InternalMessage) (Response, error) {
-	input := extractInput(messages)
+func (r *RuleResponder) Respond(ctx context.Context, req Request) (Response, error) {
+	input := extractInput(req.Messages)
 	if input == "" {
 		return Response{}, errNoMessages
 	}
@@ -84,7 +85,7 @@ func (r *RuleResponder) Respond(messages []InternalMessage) (Response, error) {
 	}
 
 	if r.markov != nil {
-		return r.markov.Respond(messages)
+		return r.markov.Respond(ctx, req)
 	}
 	return Response{Text: "That's an interesting point. Could you tell me more?"}, nil
 }
