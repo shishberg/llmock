@@ -100,8 +100,9 @@ func (b *BridgeResponder) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /_bridge/respond/", b.handleRespond)
 }
 
-// handleNext blocks until a request arrives, then returns the raw request body.
-// Sets X-Response-URL header so the consumer knows where to POST the response.
+// handleNext blocks until a request arrives, then returns a JSON envelope
+// containing the response URL and the raw request body. The response URL
+// is also set in the X-Response-URL header for convenience.
 // Returns 204 if no request arrives before timeout.
 func (b *BridgeResponder) handleNext(w http.ResponseWriter, r *http.Request) {
 	timeout := b.state.timeout
@@ -110,10 +111,21 @@ func (b *BridgeResponder) handleNext(w http.ResponseWriter, r *http.Request) {
 
 	select {
 	case breq := <-b.state.reqCh:
+		respURL := fmt.Sprintf("/_bridge/respond/%d", breq.ID)
 		w.Header().Set("Content-Type", "application/json")
-		w.Header().Set("X-Response-URL", fmt.Sprintf("/_bridge/respond/%d", breq.ID))
+		w.Header().Set("X-Response-URL", respURL)
 		w.WriteHeader(http.StatusOK)
-		w.Write(breq.Body)
+
+		// Wrap in envelope so consumers can get the response URL from
+		// the JSON body (easier for scripts) instead of parsing headers.
+		envelope := struct {
+			ResponseURL string          `json:"response_url"`
+			Body        json.RawMessage `json:"body"`
+		}{
+			ResponseURL: respURL,
+			Body:        json.RawMessage(breq.Body),
+		}
+		json.NewEncoder(w).Encode(envelope)
 	case <-timer.C:
 		w.WriteHeader(http.StatusNoContent)
 	case <-r.Context().Done():
@@ -187,8 +199,16 @@ type bridgeContentBlock struct {
 }
 
 // parseBridgeResponse converts raw response bytes into a Response.
-// It expects Anthropic-style content blocks.
+// Accepts two formats:
+//   - A JSON string: "hello" → text response
+//   - Anthropic-style content blocks: {"content":[{"type":"text","text":"hello"}]}
 func parseBridgeResponse(data []byte) (Response, error) {
+	// Try as a plain JSON string first (shorthand for text response).
+	var plainText string
+	if err := json.Unmarshal(data, &plainText); err == nil {
+		return Response{Text: plainText, Final: true}, nil
+	}
+
 	var payload bridgeResponsePayload
 	if err := json.Unmarshal(data, &payload); err != nil {
 		return Response{}, fmt.Errorf("bridge: invalid response JSON: %w", err)

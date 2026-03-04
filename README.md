@@ -12,6 +12,7 @@ A mock LLM API server for testing. Simulates OpenAI and Anthropic chat completio
 - **Markov chain fallback** &mdash; generates plausible-looking LLM text when no rule matches
 - **Fault injection** &mdash; simulate errors, delays, timeouts, rate limits, and malformed responses
 - **MCP protocol** &mdash; Model Context Protocol server with tools, resources, and prompts
+- **Interactive bridge** &mdash; respond to LLM requests interactively via HTTP long-poll
 - **Admin API** &mdash; inject rules, faults, and inspect requests at runtime
 - **Config files** &mdash; YAML or JSON configuration with auto-discovery
 
@@ -82,6 +83,7 @@ curl http://localhost:9090/v1/messages \
 -config string   Path to config file (YAML or JSON)
 -port int        Port to listen on (overrides config)
 -verbose         Log all requests/responses to stderr
+-bridge          Enable interactive bridge mode
 ```
 
 Port resolution order: `-port` flag > config file > `PORT` env var > `9090`.
@@ -170,6 +172,7 @@ mcp:
 | `rules` | list | Response rules (see below) |
 | `faults` | list | Fault injection config (see below) |
 | `mcp` | object | MCP server config (tools, resources, prompts) |
+| `bridge.timeout_ms` | int | Bridge response timeout in ms (default: 120000) |
 
 ## Rules
 
@@ -303,6 +306,91 @@ faults:
 ```
 
 Each fault supports `probability` (0.0&ndash;1.0) and `count` (trigger N times, 0 = unlimited).
+
+## Bridge (interactive mode)
+
+Bridge mode lets you respond to LLM requests interactively instead of using scripted rules. When enabled, incoming API requests are held until an external consumer provides a response via HTTP long-poll.
+
+Use cases:
+- Manually drive both sides of a conversation to test edge cases
+- Let an agent (or Claude Code itself) play the LLM role
+- Inspect what your app actually sends (system prompts, tools, message history)
+
+### Enable
+
+```bash
+llmock --bridge
+```
+
+Or in config:
+
+```yaml
+bridge:
+  timeout_ms: 120000  # optional, default 2 minutes
+```
+
+### How it works
+
+1. **Client** sends a normal API request (e.g. `POST /v1/messages`)
+2. **llmock** holds the request and queues it for the bridge consumer
+3. **Consumer** polls `GET /_bridge/next` &mdash; receives the raw request body in an envelope:
+   ```json
+   {
+     "response_url": "/_bridge/respond/1",
+     "body": { "model": "...", "system": "...", "messages": [...], "tools": [...] }
+   }
+   ```
+4. **Consumer** crafts a response and `POST`s it to the `response_url`
+5. **Client** receives the response as a normal API response
+
+The response URL is also available in the `X-Response-URL` header.
+
+### Responding
+
+Two response formats are supported:
+
+**Plain string** (shorthand for text responses):
+
+```bash
+curl -X POST http://localhost:9090/_bridge/respond/1 \
+  -H "Content-Type: application/json" \
+  -d '"Here is my response."'
+```
+
+**Anthropic content blocks** (for tool calls or mixed content):
+
+```bash
+curl -X POST http://localhost:9090/_bridge/respond/1 \
+  -H "Content-Type: application/json" \
+  -d '{"content":[{"type":"tool_use","id":"toolu_01","name":"search","input":{"q":"test"}}]}'
+```
+
+### Example: two-terminal session
+
+Terminal 1 &mdash; start llmock and send a request:
+
+```bash
+llmock --bridge --port 9090
+# (in another shell)
+curl -X POST http://localhost:9090/v1/messages \
+  -H "Content-Type: application/json" \
+  -d '{"model":"claude","max_tokens":1024,"system":"You are a chef.","messages":[{"role":"user","content":"What should I cook?"}]}'
+```
+
+Terminal 2 &mdash; act as the LLM:
+
+```bash
+# See what the client sent
+curl -s http://localhost:9090/_bridge/next | jq .
+
+# Respond
+RESP_URL=$(curl -s http://localhost:9090/_bridge/next | jq -r .response_url)
+curl -X POST "http://localhost:9090${RESP_URL}" \
+  -H "Content-Type: application/json" \
+  -d '"Try a mushroom risotto with fresh parmesan!"'
+```
+
+Bridge responses set `Final=true`, which means auto-tool-calls and force-text post-processing are skipped &mdash; you get exactly what you send.
 
 ## Admin API
 
@@ -442,6 +530,8 @@ llmock.WithFault(fault)                 // Add fault injection
 | GET | `/_mock/requests` | View request log |
 | DELETE | `/_mock/requests` | Clear request log |
 | POST | `/_mock/reset` | Full reset |
+| GET | `/_bridge/next` | Long-poll for next request (bridge mode) |
+| POST | `/_bridge/respond/{id}` | Send response for a bridge request |
 
 ## Running tests
 

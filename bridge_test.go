@@ -117,8 +117,18 @@ func TestBridge_ResponseURLHeader(t *testing.T) {
 
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
 
+	// Verify header.
 	respURL := resp.Header.Get("X-Response-URL")
 	assert.True(t, strings.HasPrefix(respURL, "/_bridge/respond/"), "expected response URL prefix, got %q", respURL)
+
+	// Verify response_url is also in the JSON body envelope.
+	var envelope struct {
+		ResponseURL string          `json:"response_url"`
+		Body        json.RawMessage `json:"body"`
+	}
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&envelope))
+	assert.Equal(t, respURL, envelope.ResponseURL)
+	assert.NotEmpty(t, envelope.Body)
 
 	// Now POST a response to that URL and verify it works.
 	body := `{"content":[{"type":"text","text":"responded via header URL"}]}`
@@ -346,6 +356,69 @@ func TestBridge_NextTimeout(t *testing.T) {
 	defer resp.Body.Close()
 
 	assert.Equal(t, http.StatusNoContent, resp.StatusCode)
+}
+
+func TestBridge_PlainStringShorthand(t *testing.T) {
+	ts := bridgeServer(t)
+	defer ts.Close()
+
+	go func() {
+		resp, err := http.Get(ts.URL + "/_bridge/next")
+		if err != nil {
+			return
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			return
+		}
+		respURL := resp.Header.Get("X-Response-URL")
+
+		// Send a plain JSON string instead of full content blocks.
+		http.Post(ts.URL+respURL, "application/json", strings.NewReader(`"hello from shorthand"`))
+	}()
+
+	reqBody := `{"model":"test","max_tokens":100,"messages":[{"role":"user","content":"hi"}]}`
+	resp, err := http.Post(ts.URL+"/v1/messages", "application/json", strings.NewReader(reqBody))
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+
+	var result llmock.AnthropicResponse
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&result))
+	require.Len(t, result.Content, 1)
+	assert.Equal(t, "text", result.Content[0].Type)
+	assert.Equal(t, "hello from shorthand", result.Content[0].Text)
+}
+
+func TestBridge_EnvelopeResponseURL(t *testing.T) {
+	ts := bridgeServer(t)
+	defer ts.Close()
+
+	// Send a request in the background.
+	go func() {
+		reqBody := `{"model":"test","max_tokens":100,"messages":[{"role":"user","content":"hi"}]}`
+		http.Post(ts.URL+"/v1/messages", "application/json", strings.NewReader(reqBody))
+	}()
+
+	// Poll and parse the envelope to get response_url from JSON body.
+	resp, err := http.Get(ts.URL + "/_bridge/next")
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+
+	var envelope struct {
+		ResponseURL string          `json:"response_url"`
+		Body        json.RawMessage `json:"body"`
+	}
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&envelope))
+	assert.True(t, strings.HasPrefix(envelope.ResponseURL, "/_bridge/respond/"))
+
+	// Use the response_url from the envelope (not from the header) to respond.
+	postResp, err := http.Post(ts.URL+envelope.ResponseURL, "application/json", strings.NewReader(`"responded via envelope"`))
+	require.NoError(t, err)
+	defer postResp.Body.Close()
+	assert.Equal(t, http.StatusOK, postResp.StatusCode)
 }
 
 func TestBridge_MultipleSequentialRequests(t *testing.T) {
