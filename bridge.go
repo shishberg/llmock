@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"strconv"
@@ -137,10 +138,13 @@ func (b *BridgeResponder) handleRespond(w http.ResponseWriter, r *http.Request) 
 	}
 
 	// Read and validate response body.
-	var buf []byte
-	buf, err = readLimited(r.Body, 10<<20) // 10MB limit
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "reading body: "+err.Error())
+	buf, readErr := io.ReadAll(io.LimitReader(r.Body, 10<<20))
+	if readErr != nil {
+		writeError(w, http.StatusBadRequest, "reading body: "+readErr.Error())
+		return
+	}
+	if len(buf) == 0 {
+		writeError(w, http.StatusBadRequest, "empty response body")
 		return
 	}
 
@@ -167,43 +171,6 @@ func (b *BridgeResponder) handleRespond(w http.ResponseWriter, r *http.Request) 
 		// Channel already has a response (shouldn't happen).
 		writeError(w, http.StatusConflict, "response already provided")
 	}
-}
-
-// readLimited reads up to limit bytes from r.
-func readLimited(r interface{ Read([]byte) (int, error) }, limit int64) ([]byte, error) {
-	lr := &limitedReader{r: r, remaining: limit}
-	var buf []byte
-	tmp := make([]byte, 32*1024)
-	for {
-		n, err := lr.Read(tmp)
-		if n > 0 {
-			buf = append(buf, tmp[:n]...)
-		}
-		if err != nil {
-			if err.Error() == "limit exceeded" {
-				return nil, fmt.Errorf("body too large (limit %d bytes)", limit)
-			}
-			break
-		}
-	}
-	return buf, nil
-}
-
-type limitedReader struct {
-	r         interface{ Read([]byte) (int, error) }
-	remaining int64
-}
-
-func (lr *limitedReader) Read(p []byte) (int, error) {
-	if lr.remaining <= 0 {
-		return 0, fmt.Errorf("limit exceeded")
-	}
-	if int64(len(p)) > lr.remaining {
-		p = p[:lr.remaining]
-	}
-	n, err := lr.r.Read(p)
-	lr.remaining -= int64(n)
-	return n, err
 }
 
 // bridgeResponsePayload is used to parse the content blocks from a bridge response.
